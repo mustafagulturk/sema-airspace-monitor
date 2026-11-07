@@ -1,0 +1,11 @@
+icao24,registration,manufacturericao,manufacturername,model,typecode,serialnumber,linenumber,icaoaircrafttype,operator,operatorcallsign,operatoricao,operatoriata,owner,testreg,registered,reguntil,status,built,firstflightdate,seatconfiguration,engines,modes,adsb,acars,notes,categoryDescription
+4b8001,TC-AAA,,,737-800,,,,,Example Airways,EXAMPLE,EXA,,Example Leasing,,,,,,,,,,,,,
+4b8002,,,,C-130,,,,,,,,,Türk Hava Kuvvetleri,,,,,,,,,,,,,
+4b8003,,,,A400M,,,,,,,,,TÜRK HAVA KUVVETLERİ,,,,,,,,,,,,,
+4b8004,,,,BN-2,,,,,Ministry of Defence,,,,,,,,,,,,,,,,,
+4B8005,,,,A321,,,,,Example Military Transport,,gaf,,,,,,,,,,,,,,,
+4b8006,TC-XXA,,,A330,,,,,,,,,T.C. CUMHURBAŞKANLIĞI,,,,,,,,,,,,,
+4b8007,,,,CN-235,,,,,Sahil Güvenlik Komutanlığı,,,,,,,,,,,,,,,,,
+4b8008,,,,T-70,,,,,,,,,Jandarma Genel Komutanlığı,,,,,,,,,,,,,
+4b8009,TC-AAB,,,A320,,,,,Sample Charter,,SMP,,Sample Charter,,,,,,,,,,,,,
+4b800a,,,,P-8,,,,,,NAVY,,,,,,,,,,,,,,,,

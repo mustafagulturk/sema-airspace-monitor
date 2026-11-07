@@ -1,0 +1,11 @@
+{
+  "name": "sema",
+  "version-string": "0.1.0",
+  "description": "Live Turkish airspace monitor built on OpenSky Network data",
+  "dependencies": [
+    "curl",
+    "nlohmann-json",
+    "libpqxx",
+    "gtest"
+  ]
+}

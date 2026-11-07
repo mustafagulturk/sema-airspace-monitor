@@ -1,0 +1,54 @@
+{
+  "_comment": "Rules for dropping military and government aircraft before storage or display. Any single match drops the aircraft. Every list is a conservative starting point: extend it when a military/state aircraft is seen getting through, and verify new entries against a published source before adding them.",
+  "sources": {
+    "icao_blocks": "Mode S address ranges commonly used by ADS-B community tools to flag military aircraft.",
+    "callsign_patterns": "ICAO three-letter designators / radio callsigns of air forces and state operators. Every pattern requires digits right after the prefix to avoid matching civil callsigns. Matched against the upper-cased, trimmed callsign as a full match.",
+    "operator_keywords": "Case-insensitive substrings searched in the OpenSky aircraft database operator, operatorCallsign and owner fields. Turkish capital letters (İ, Ş, Ğ, Ü, Ö, Ç) are folded before comparison.",
+    "operator_designators": "Exact operatorIcao values in the OpenSky aircraft database."
+  },
+  "icao_blocks": [
+    { "from": "adf7c8", "to": "afffff", "note": "United States military" }
+  ],
+  "callsign_patterns": [
+    "RCH[0-9]+[A-Z]*",
+    "CNV[0-9]+[A-Z]*",
+    "PAT[0-9]+[A-Z]*",
+    "SAM[0-9]+[A-Z]*",
+    "RRR[0-9]+[A-Z]*",
+    "CFC[0-9]+[A-Z]*",
+    "GAF[0-9]+[A-Z]*",
+    "IAM[0-9]+[A-Z]*",
+    "BAF[0-9]+[A-Z]*",
+    "HAF[0-9]+[A-Z]*",
+    "FAF[0-9]+[A-Z]*",
+    "CTM[0-9]+[A-Z]*",
+    "NATO[0-9]+[A-Z]*",
+    "TUAF[0-9]+[A-Z]*"
+  ],
+  "operator_keywords": [
+    "air force",
+    "airforce",
+    "navy",
+    "naval",
+    "army",
+    "military",
+    "ministry of defen",
+    "gendarmerie",
+    "coast guard",
+    "government",
+    "presidency",
+    "police",
+    "hava kuvvet",
+    "kara kuvvet",
+    "deniz kuvvet",
+    "jandarma",
+    "milli savunma",
+    "sahil güvenlik",
+    "cumhurbaşkanlığı",
+    "emniyet genel müdürlüğü",
+    "polis hava"
+  ],
+  "operator_designators": [
+    "RCH", "CNV", "PAT", "RRR", "CFC", "GAF", "IAM", "BAF", "HAF", "FAF", "CTM"
+  ]
+}

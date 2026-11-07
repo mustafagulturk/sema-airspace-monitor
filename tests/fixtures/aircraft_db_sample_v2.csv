@@ -1,0 +1,5 @@
+'icao24','timestamp','acars','adsb','built','categoryDescription','country','engines','firstFlightDate','firstSeen','icaoAircraftClass','lineNumber','manufacturerIcao','manufacturerName','model','modes','nextReg','notes','operator','operatorCallsign','operatorIata','operatorIcao','owner','prevReg','regUntil','registered','registration','selCal','serialNumber','status','typecode','vdl'
+'4b9001','','','','','','','','','','','','','','A320neo','','','leased, then returned','Sample Hava Taşımacılığı, A.Ş.','','','SMQ','Sample, Leasing Ltd','','','','TC-BBA','','','','',''
+'4b9002','','','','','','','','','','','','','','CH-47','','','','','','','','Türk Kara Kuvvetleri','','','','','','','','',''
+'4b9003','','','','','','','','','','','','','','KC-135','','','','Example ''Quoted'' Air Force','','','','','','','','','','','','',''
+'4b9004','','','','','','','','','','','','','','AW139','','','','Nowhere State Police, Air Wing','','','','','','','','','','','','',''
