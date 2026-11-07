@@ -8,6 +8,11 @@ add_executable(sema_unit_tests
   test_military_filter.cpp
   test_opensky_client.cpp
   test_pipeline.cpp
+  test_kalman.cpp
+  test_quality.cpp
+  test_metrics.cpp
+  test_tracker.cpp
+  test_snapshot_io.cpp
 )
 target_link_libraries(sema_unit_tests PRIVATE sema_core GTest::gtest_main)
 target_compile_definitions(sema_unit_tests PRIVATE

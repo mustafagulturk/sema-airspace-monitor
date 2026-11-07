@@ -53,6 +53,11 @@ add_library(sema_core
   src/pipeline.cpp
   src/pg_store.cpp
   src/clock.cpp
+  src/kalman.cpp
+  src/quality.cpp
+  src/metrics.cpp
+  src/tracker.cpp
+  src/snapshot_io.cpp
 )
 target_include_directories(sema_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -63,6 +68,9 @@ target_link_libraries(sema_core
 
 add_executable(sema_collector apps/collector.cpp)
 target_link_libraries(sema_collector PRIVATE sema_core)
+
+add_executable(sema_replay apps/replay.cpp)
+target_link_libraries(sema_replay PRIVATE sema_core)
 
 if(SEMA_BUILD_TESTS)
   enable_testing()
