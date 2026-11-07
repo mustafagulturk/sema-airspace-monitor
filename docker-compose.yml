@@ -1,0 +1,23 @@
+# Development database for Semâ (PostgreSQL 16 + PostGIS 3.4).
+#   cp .env.example .env && docker compose up -d db
+# The collector creates its own schema on start (sql/001_init.sql is embedded).
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sema}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sema}
+      POSTGRES_DB: ${POSTGRES_DB:-sema}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - sema-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  sema-db:
