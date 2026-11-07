@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEPS: ninja-build libcurl4-openssl-dev nlohmann-json3-dev libpqxx-dev libgtest-dev
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.compiler }} / ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { compiler: gcc,   cc: gcc,   cxx: g++,     preset: debug }
+          - { compiler: clang, cc: clang, cxx: clang++, preset: debug }
+          - { compiler: gcc,   cc: gcc,   cxx: g++,     preset: asan }
+          - { compiler: gcc,   cc: gcc,   cxx: g++,     preset: tsan }
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: sema
+          POSTGRES_PASSWORD: sema
+          POSTGRES_DB: sema_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sema -d sema_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      SEMA_TEST_DATABASE_URL: postgresql://sema:sema@localhost:5432/sema_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q $DEPS
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Unit tests
+        run: ctest --preset ${{ matrix.preset }} -L unit
+      - name: Integration tests (PostGIS)
+        # libpq is not instrumented for TSan, so integration tests run in the other jobs.
+        if: matrix.preset != 'tsan'
+        run: ctest --preset ${{ matrix.preset }} -L integration
+
+  clang-tidy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q $DEPS clang-tidy
+      - name: Configure
+        run: cmake --preset debug -DCMAKE_CXX_COMPILER=clang++
+      - name: Build (generates headers)
+        run: cmake --build --preset debug --target sema_core sema_collector
+      - name: clang-tidy
+        run: run-clang-tidy -p build/debug -quiet "$PWD/(src|apps)/.*\.cpp$"
