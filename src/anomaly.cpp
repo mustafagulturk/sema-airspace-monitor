@@ -1,6 +1,7 @@
 #include "sema/anomaly.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <numbers>
@@ -109,6 +110,60 @@ const char* to_string(EventKind k) {
     return "unknown";
 }
 
+namespace {
+
+struct Param {
+    const char* name;
+    double AnomalyConfig::* d = nullptr;
+    int AnomalyConfig::* i = nullptr;
+    std::uint64_t AnomalyConfig::* u = nullptr;
+};
+
+const std::vector<Param>& params() {
+    static const std::vector<Param> p = {
+        {"squawk_confirm_reports", nullptr, &AnomalyConfig::squawk_confirm_reports},
+        {"descent_window_s", &AnomalyConfig::descent_window_s},
+        {"descent_min_drop_m", &AnomalyConfig::descent_min_drop_m},
+        {"descent_min_rate_ms", &AnomalyConfig::descent_min_rate_ms},
+        {"descent_min_fixes", nullptr, &AnomalyConfig::descent_min_fixes},
+        {"descent_min_start_alt_m", &AnomalyConfig::descent_min_start_alt_m},
+        {"holding_min_duration_s", &AnomalyConfig::holding_min_duration_s},
+        {"holding_max_radius_m", &AnomalyConfig::holding_max_radius_m},
+        {"holding_min_speed_ms", &AnomalyConfig::holding_min_speed_ms},
+        {"holding_min_fixes", nullptr, &AnomalyConfig::holding_min_fixes},
+        {"deviation_course_fixes", nullptr, &AnomalyConfig::deviation_course_fixes},
+        {"deviation_straight_tol_deg", &AnomalyConfig::deviation_straight_tol_deg},
+        {"deviation_new_course_tol_deg", &AnomalyConfig::deviation_new_course_tol_deg},
+        {"deviation_min_turn_deg", &AnomalyConfig::deviation_min_turn_deg},
+        {"deviation_min_alt_m", &AnomalyConfig::deviation_min_alt_m},
+        {"deviation_min_leg_m", &AnomalyConfig::deviation_min_leg_m},
+        {"signal_loss_after_s", &AnomalyConfig::signal_loss_after_s},
+        {"signal_loss_min_alt_m", &AnomalyConfig::signal_loss_min_alt_m},
+        {"signal_loss_min_coverage", nullptr, nullptr, &AnomalyConfig::signal_loss_min_coverage},
+    };
+    return p;
+}
+
+}  // namespace
+
+bool set_anomaly_param(AnomalyConfig& cfg, std::string_view name, double value) {
+    if (!std::isfinite(value) || value < 0.0) return false;
+    for (const auto& p : params()) {
+        if (name != p.name) continue;
+        if (p.d != nullptr) cfg.*p.d = value;
+        if (p.i != nullptr) cfg.*p.i = static_cast<int>(std::lround(value));
+        if (p.u != nullptr) cfg.*p.u = static_cast<std::uint64_t>(std::llround(value));
+        return true;
+    }
+    return false;
+}
+
+std::vector<std::string> anomaly_param_names() {
+    std::vector<std::string> out;
+    for (const auto& p : params()) out.emplace_back(p.name);
+    return out;
+}
+
 std::string AnomalyEvent::key() const {
     return std::string(to_string(kind)) + ":" + icao24 + ":" + std::to_string(static_cast<std::int64_t>(start_time));
 }
@@ -163,7 +218,8 @@ json AnomalyMetrics::to_json() const {
             {"events_by_kind", by_kind},
             {"events_per_1000_aircraft_hours", per_1000h},
             {"airborne_aircraft_hours", round_to(airborne_aircraft_hours, 1)},
-            {"duration_s", duration_s.to_json(0)}};
+            {"duration_s", duration_s.to_json(0)},
+            {"processing_us_per_snapshot", processing_us_per_snapshot.to_json(1)}};
 }
 
 AnomalyDetector::AnomalyDetector(AnomalyConfig config, std::shared_ptr<const MultiPolygon> area)
@@ -299,7 +355,7 @@ void AnomalyDetector::check_emergency(const std::string& icao, Aircraft& a, cons
     if (!is_emergency_squawk(code) || s.on_ground || a.squawk_count < cfg_.squawk_confirm_reports) return;
     if (a.open[idx(EventKind::Emergency)]) return;
     if (!s.has_position() && a.fixes.empty()) return;
-    const LatLon pos = s.has_position() ? LatLon{*s.latitude, *s.longitude} : a.fixes.back().pos;
+    const LatLon pos = s.has_position() ? LatLon{s.latitude.value_or(0.0), s.longitude.value_or(0.0)} : a.fixes.back().pos;
     std::optional<double> alt = s.baro_altitude ? s.baro_altitude : s.geo_altitude;
     auto& e = open_event(EventKind::Emergency, icao, a, a.squawk_first_time, now, pos, alt, out);
     e.details = {{"squawk", code}, {"meaning", squawk_meaning(code)}};
@@ -317,7 +373,7 @@ void AnomalyDetector::check_descent(const std::string& icao, Aircraft& a, double
         while (j > 0) {
             const auto& prev = f[j - 1];
             const auto& cur = f[j];
-            if (!prev.altitude || prev.on_ground || !(*prev.altitude > *cur.altitude)) break;
+            if (!prev.altitude || prev.on_ground || !(prev.altitude.value_or(0.0) > cur.altitude.value_or(0.0))) break;
             if (cur.time - prev.time > kMaxFixGapS) break;
             if (f.back().time - prev.time > cfg_.descent_window_s && !is_open) break;
             --j;
@@ -332,20 +388,20 @@ void AnomalyDetector::check_descent(const std::string& icao, Aircraft& a, double
         const auto& s1 = f.back();
         const auto n = static_cast<int>(f.size() - *start);
         const double dt = s1.time - s0.time;
-        drop = *s0.altitude - *s1.altitude;
+        drop = s0.altitude.value_or(0.0) - s1.altitude.value_or(0.0);
         rate = dt > 0.0 ? drop / dt : 0.0;
         // While open, the event continues as long as the aircraft keeps
         // going down; the opening thresholds only apply to raising it.
         holds = is_open ? n >= 2
                         : (n >= cfg_.descent_min_fixes && drop >= cfg_.descent_min_drop_m &&
-                           rate >= cfg_.descent_min_rate_ms && *s0.altitude >= cfg_.descent_min_start_alt_m);
+                           rate >= cfg_.descent_min_rate_ms && s0.altitude.value_or(0.0) >= cfg_.descent_min_start_alt_m);
     }
     if (is_open) {
-        const auto it = active_.find(*a.open[idx(EventKind::RapidDescent)]);
+        const auto it = active_.find(a.open[idx(EventKind::RapidDescent)].value_or(0));
         if (holds && it != active_.end()) {
             json d = it->second.details;
             const double from = d.value("from_alt_m", 0.0);
-            const double to = *f.back().altitude;
+            const double to = f.back().altitude.value_or(0.0);
             const double dur = f.back().time - it->second.start_time;
             d["to_alt_m"] = round_to(to, 0);
             d["drop_m"] = round_to(from - to, 0);
@@ -358,10 +414,10 @@ void AnomalyDetector::check_descent(const std::string& icao, Aircraft& a, double
         return;
     }
     if (!holds || f.back().time - a.closed_at[idx(EventKind::RapidDescent)] < kCooldownS) return;
-    const auto& s0 = f[*start];
+    const auto& s0 = f[start.value_or(0)];
     auto& e = open_event(EventKind::RapidDescent, icao, a, s0.time, now, f.back().pos, f.back().altitude, out);
-    e.details = {{"from_alt_m", round_to(*s0.altitude, 0)},
-                 {"to_alt_m", round_to(*f.back().altitude, 0)},
+    e.details = {{"from_alt_m", round_to(s0.altitude.value_or(0.0), 0)},
+                 {"to_alt_m", round_to(f.back().altitude.value_or(0.0), 0)},
                  {"drop_m", round_to(drop, 0)},
                  {"duration_s", round_to(f.back().time - s0.time, 0)},
                  {"rate_ms", round_to(rate, 1)}};
@@ -512,6 +568,7 @@ void AnomalyDetector::check_signal_loss(const Tracker& tracker, double now, Anom
 
 AnomalyReport AnomalyDetector::process(const StatesSnapshot& snapshot, const Tracker& tracker,
                                        const SnapshotReport& report) {
+    const auto started = std::chrono::steady_clock::now();
     AnomalyReport out;
     const auto now = static_cast<double>(snapshot.time);
     ++metrics_.snapshots;
@@ -598,6 +655,8 @@ AnomalyReport AnomalyDetector::process(const StatesSnapshot& snapshot, const Tra
             ++it;
         }
     }
+    metrics_.processing_us_per_snapshot.add(
+        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count());
     return out;
 }
 
@@ -613,10 +672,12 @@ std::vector<AnomalyEvent> AnomalyDetector::active() const {
 
 std::vector<AnomalyEvent> AnomalyDetector::recent() const {
     auto out = active();
-    for (const auto& e : closed_) {
-        if (out.size() >= cfg_.recent_events) break;
-        out.push_back(e);
-    }
+    const auto n_active = static_cast<std::ptrdiff_t>(out.size());
+    out.insert(out.end(), closed_.begin(), closed_.end());
+    // Ended events newest first by start time (they are kept in the order they ended).
+    std::stable_sort(out.begin() + n_active, out.end(), [](const AnomalyEvent& x, const AnomalyEvent& y) {
+        return x.start_time > y.start_time;
+    });
     if (out.size() > cfg_.recent_events) out.resize(cfg_.recent_events);
     return out;
 }

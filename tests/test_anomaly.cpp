@@ -416,3 +416,27 @@ TEST(Anomaly, DefaultCoverageThresholdSilencesSignalLossOnShortRecordings) {
     const auto opened = replay_fixture("anomaly_synthetic.jsonl", {}, turkey());
     for (const auto& e : opened) EXPECT_NE(e.kind, EventKind::SignalLoss);
 }
+
+TEST(Anomaly, ThresholdsCanBeSetByName) {
+    AnomalyConfig cfg;
+    EXPECT_TRUE(set_anomaly_param(cfg, "descent_min_rate_ms", 18.5));
+    EXPECT_DOUBLE_EQ(cfg.descent_min_rate_ms, 18.5);
+    EXPECT_TRUE(set_anomaly_param(cfg, "squawk_confirm_reports", 3));
+    EXPECT_EQ(cfg.squawk_confirm_reports, 3);
+    EXPECT_TRUE(set_anomaly_param(cfg, "signal_loss_min_coverage", 50));
+    EXPECT_EQ(cfg.signal_loss_min_coverage, 50U);
+    EXPECT_FALSE(set_anomaly_param(cfg, "no_such_threshold", 1));
+    EXPECT_FALSE(set_anomaly_param(cfg, "holding_max_radius_m", -1));
+    EXPECT_EQ(anomaly_param_names().size(), 19U);
+}
+
+TEST(Anomaly, StricterThresholdSilencesARule) {
+    // Tuning check: the injected 35 m/s descent is not raised once the rate
+    // threshold is above it.
+    AnomalyConfig cfg;
+    cfg.signal_loss_min_coverage = 3;
+    ASSERT_TRUE(set_anomaly_param(cfg, "descent_min_rate_ms", 40));
+    for (const auto& e : replay_fixture("anomaly_synthetic.jsonl", cfg, turkey())) {
+        EXPECT_NE(e.kind, EventKind::RapidDescent);
+    }
+}

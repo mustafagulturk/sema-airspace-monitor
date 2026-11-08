@@ -23,6 +23,8 @@
 //   --loss-min-coverage N  signal-loss rule: reports needed in the last
 //                   fix's coverage cell (default 200 over 24 h; short
 //                   recordings need a lower value)
+//   --anomaly NAME=V set any detector threshold (repeatable), e.g.
+//                   --anomaly descent_min_rate_ms=18; --anomaly list prints the names
 
 #include <pthread.h>
 #include <signal.h>
@@ -40,6 +42,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -60,6 +64,7 @@ struct Options {
     bool snapshots = false;
     bool events = false;
     std::optional<long> loss_min_coverage;
+    std::vector<std::pair<std::string, double>> anomaly_params;
     std::optional<double> accel_psd;
     std::optional<double> turn_psd;
     std::optional<double> ct_accel_psd;
@@ -72,7 +77,7 @@ struct Options {
 
 [[noreturn]] void usage(int code) {
     std::cerr << "usage: sema_replay <recording.jsonl> [--data-dir DIR] [--no-area] [--accel-psd Q] [--ct-accel-psd Q] [--turn-psd Q] [--json] "
-                 "[--snapshots] [--events [--loss-min-coverage N]] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] "
+                 "[--snapshots] [--events [--loss-min-coverage N] [--anomaly NAME=V]...] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] "
                  "[--web-root DIR]]\n";
     std::exit(code);
 }
@@ -114,6 +119,16 @@ Options parse(int argc, char** argv) {
         } else if (a == "--loss-min-coverage") {
             o.loss_min_coverage = std::stol(value());
             if (*o.loss_min_coverage < 0) usage(2);
+        } else if (a == "--anomaly") {
+            const std::string kv = value();
+            if (kv == "list") {
+                for (const auto& n : sema::anomaly_param_names()) std::cout << n << '\n';
+                std::exit(0);
+            }
+            const auto eq = kv.find('=');
+            if (eq == std::string::npos) usage(2);
+            o.anomaly_params.emplace_back(kv.substr(0, eq), std::stod(kv.substr(eq + 1)));
+            o.events = true;
         } else if (a == "--snapshots") {
             o.snapshots = true;
         } else if (a == "-h" || a == "--help") {
@@ -188,6 +203,8 @@ void print_events(const sema::AnomalyMetrics& m, const std::vector<sema::Anomaly
         std::cout << "  " << k << std::string(18 - std::string(k).size(), ' ') << m.events_by_kind[i] << "  ("
                   << fmt(j["events_per_1000_aircraft_hours"][k].get<double>(), 2) << " per 1000 h)\n";
     }
+    std::cout << "  detector time per snapshot: p50=" << fmt(m.processing_us_per_snapshot.percentile(50), 0)
+              << " us  max=" << fmt(m.processing_us_per_snapshot.max(), 0) << " us\n";
     for (const auto& e : events) {
         std::cout << "  " << utc(e.start_time) << "  " << sema::to_string(e.kind) << "  " << e.icao24 << ' '
                   << (e.callsign.empty() ? "-" : e.callsign) << "  " << fmt((e.end_time - e.start_time) / 60.0, 1)
@@ -212,6 +229,9 @@ int run(const Options& o) {
     sema::Tracker tracker(cfg, in_area);
     sema::AnomalyConfig acfg;
     if (o.loss_min_coverage) acfg.signal_loss_min_coverage = static_cast<std::uint64_t>(*o.loss_min_coverage);
+    for (const auto& [name, v] : o.anomaly_params) {
+        if (!sema::set_anomaly_param(acfg, name, v)) throw std::runtime_error("unknown or invalid --anomaly " + name);
+    }
     sema::AnomalyDetector detector(acfg, area);
     std::vector<sema::AnomalyEvent> finished;  // closed events, in order
     sema::SnapshotReader reader(o.input);
@@ -258,7 +278,7 @@ int run(const Options& o) {
         if (server) {
             const auto t = static_cast<double>(snap->time);
             if (!first_time) first_time = t;
-            const double due = (t - *first_time) / o.speed;
+            const double due = (t - first_time.value_or(t)) / o.speed;
             const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
             if (!wait(due - elapsed)) {
                 stopped = true;

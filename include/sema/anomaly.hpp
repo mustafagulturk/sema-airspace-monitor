@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -99,6 +100,12 @@ struct AnomalyConfig {
     std::size_t recent_events = 50;  // events kept for the live map
 };
 
+// Sets one numeric threshold by its field name (e.g. "descent_min_rate_ms"),
+// for tuning from the command line. Returns false for an unknown name or an
+// invalid (negative or non-finite) value. `anomaly_param_names()` lists them.
+bool set_anomaly_param(AnomalyConfig& cfg, std::string_view name, double value);
+std::vector<std::string> anomaly_param_names();
+
 struct EventPoint {
     double time;
     LatLon pos;
@@ -145,6 +152,7 @@ struct AnomalyMetrics {
     // event rate (events per 1,000 aircraft-hours) used to tune thresholds.
     double airborne_aircraft_hours = 0.0;
     Distribution duration_s;
+    Distribution processing_us_per_snapshot;
     [[nodiscard]] std::uint64_t events() const;
     [[nodiscard]] nlohmann::json to_json() const;
 };
