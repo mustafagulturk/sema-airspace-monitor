@@ -1,0 +1,7 @@
+build/
+.cache/
+.git/
+.env
+**/node_modules
+web/dist
+*.jsonl

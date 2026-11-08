@@ -51,6 +51,14 @@ struct PgStore::Impl {
                      "ON CONFLICT (key) DO UPDATE SET callsign = EXCLUDED.callsign, end_time = EXCLUDED.end_time, "
                      "active = EXCLUDED.active, summary = EXCLUDED.summary, details = EXCLUDED.details, "
                      "track = EXCLUDED.track, updated_at = now()");
+        conn.prepare("insert_flight",
+                     "INSERT INTO flights (track_id, icao24, callsign, origin_country, first_seen, last_seen, "
+                     "first_pos, last_pos, min_altitude_m, max_altitude_m, fixes, airborne, departure, arrival, "
+                     "end_reason, cells) VALUES ($1, $2, $3, $4, to_timestamp($5), to_timestamp($6), "
+                     "ST_SetSRID(ST_MakePoint($7, $8), 4326)::geography, "
+                     "ST_SetSRID(ST_MakePoint($9, $10), 4326)::geography, $11, $12, $13, $14, $15, $16, $17, "
+                     "string_to_array($18, ',')::integer[]) "
+                     "ON CONFLICT (icao24, first_seen) DO NOTHING");
         conn.prepare("rollup_and_prune", "SELECT sema_rollup_and_prune(make_interval(hours => $1))");
         prepared = true;
     }
@@ -65,6 +73,7 @@ void PgStore::migrate() {
     tx.exec("SELECT pg_advisory_xact_lock(7302551)");
     tx.exec(std::string(migrations::k001Init));
     tx.exec(std::string(migrations::k002Events));
+    tx.exec(std::string(migrations::k003History));
     tx.commit();
     impl_->prepare();
 }
@@ -121,6 +130,28 @@ void PgStore::upsert_events(const std::vector<AnomalyEvent>& events) {
                          e.pos.lat, e.altitude_m, e.summary, e.details.dump(), track);
     }
     tx.commit();
+}
+
+std::size_t PgStore::insert_flights(const std::vector<FlightRecord>& flights) {
+    if (flights.empty()) return 0;
+    impl_->prepare();
+    std::size_t written = 0;
+    pqxx::work tx(impl_->conn);
+    for (const auto& f : flights) {
+        std::string cells;
+        for (const auto c : f.cells) {
+            if (!cells.empty()) cells.push_back(',');
+            cells += std::to_string(c);
+        }
+        auto r = tx.exec_prepared("insert_flight", static_cast<std::int64_t>(f.track_id), f.icao24,
+                                  non_empty(f.callsign), non_empty(f.origin_country), f.first_seen, f.last_seen,
+                                  f.first_pos.lon, f.first_pos.lat, f.last_pos.lon, f.last_pos.lat, f.min_altitude_m,
+                                  f.max_altitude_m, f.fixes, f.airborne, non_empty(f.departure), non_empty(f.arrival),
+                                  f.end_reason, cells);
+        written += static_cast<std::size_t>(r.affected_rows());
+    }
+    tx.commit();
+    return written;
 }
 
 std::int64_t PgStore::rollup_and_prune(std::chrono::hours keep) {

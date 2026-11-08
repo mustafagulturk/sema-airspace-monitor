@@ -25,6 +25,11 @@
 //                   recordings need a lower value)
 //   --anomaly NAME=V set any detector threshold (repeatable), e.g.
 //                   --anomaly descent_min_rate_ms=18; --anomaly list prints the names
+//   --stats         print traffic statistics (flights, busiest hours, airports,
+//                   routes, corridors) for the whole recording as JSON
+//
+// With --serve the whole recording is also loaded into memory first, so the
+// map's "Geçmiş" (replay any range) and "İstatistik" views work at once.
 
 #include <pthread.h>
 #include <signal.h>
@@ -40,6 +45,8 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <vector>
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -48,11 +55,14 @@
 #include <nlohmann/json.hpp>
 
 #include "sema/anomaly.hpp"
+#include "sema/flights.hpp"
 #include "sema/geo.hpp"
+#include "sema/history.hpp"
 #include "sema/live.hpp"
 #include "sema/live_server.hpp"
 #include "sema/snapshot_io.hpp"
 #include "sema/tracker.hpp"
+#include "sema/traffic_stats.hpp"
 
 namespace {
 
@@ -65,6 +75,7 @@ struct Options {
     bool events = false;
     std::optional<long> loss_min_coverage;
     std::vector<std::pair<std::string, double>> anomaly_params;
+    bool stats = false;
     std::optional<double> accel_psd;
     std::optional<double> turn_psd;
     std::optional<double> ct_accel_psd;
@@ -77,7 +88,7 @@ struct Options {
 
 [[noreturn]] void usage(int code) {
     std::cerr << "usage: sema_replay <recording.jsonl> [--data-dir DIR] [--no-area] [--accel-psd Q] [--ct-accel-psd Q] [--turn-psd Q] [--json] "
-                 "[--snapshots] [--events [--loss-min-coverage N] [--anomaly NAME=V]...] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] "
+                 "[--snapshots] [--stats] [--events [--loss-min-coverage N] [--anomaly NAME=V]...] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] "
                  "[--web-root DIR]]\n";
     std::exit(code);
 }
@@ -131,6 +142,8 @@ Options parse(int argc, char** argv) {
             o.events = true;
         } else if (a == "--snapshots") {
             o.snapshots = true;
+        } else if (a == "--stats") {
+            o.stats = true;
         } else if (a == "-h" || a == "--help") {
             usage(0);
         } else if (!a.empty() && a[0] != '-' && o.input.empty()) {
@@ -212,6 +225,31 @@ void print_events(const sema::AnomalyMetrics& m, const std::vector<sema::Anomaly
     }
 }
 
+std::shared_ptr<const sema::AirportIndex> load_airports(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) return std::make_shared<const sema::AirportIndex>();
+    return std::make_shared<const sema::AirportIndex>(sema::AirportIndex::load(path));
+}
+
+// Runs a separate tracker + flight log over the whole recording and keeps
+// everything in memory, for the map's history and statistics views.
+std::shared_ptr<sema::MemoryHistory> preload_history(const Options& o, const sema::TrackerConfig& cfg,
+                                                     const std::function<bool(sema::LatLon)>& in_area,
+                                                     const sema::AirportIndex& airports) {
+    sema::MemoryHistory::Limits limits;
+    limits.keep_fixes_s = 400.0 * 86400.0;  // keep the whole recording (max_fixes still caps memory)
+    limits.keep_flights_s = 400.0 * 86400.0;
+    auto history = std::make_shared<sema::MemoryHistory>(limits);
+    sema::Tracker tracker(cfg, in_area);
+    sema::FlightLog log(&airports);
+    sema::SnapshotReader reader(o.input);
+    while (auto snap = reader.next()) {
+        const auto r = tracker.process(*snap);
+        history->record(*snap, log.update(*snap, r, tracker));
+    }
+    history->record(sema::StatesSnapshot{0, {}}, log.flush());
+    return history;
+}
+
 int run(const Options& o) {
     sema::TrackerConfig cfg;
     if (o.accel_psd) cfg.accel_psd = *o.accel_psd;
@@ -235,6 +273,9 @@ int run(const Options& o) {
     sema::AnomalyDetector detector(acfg, area);
     std::vector<sema::AnomalyEvent> finished;  // closed events, in order
     sema::SnapshotReader reader(o.input);
+    const auto airports = load_airports(std::filesystem::path(o.data_dir) / "airports_tr.json");
+    sema::FlightLog flight_log(airports.get());
+    std::vector<sema::FlightRecord> flights;
 
     // Live map. Signals are blocked before the server thread starts and are
     // then waited for with sigtimedwait, which doubles as the pacing sleep.
@@ -252,6 +293,12 @@ int run(const Options& o) {
         sc.port = static_cast<std::uint16_t>(*o.serve_port);
         sc.web_root = o.web_root;
         sc.files["/boundary.geojson"] = std::filesystem::path(o.data_dir) / "turkey_boundary.geojson";
+        sema::HistoryApiConfig hc;
+        hc.mode = "replay";
+        hc.label = o.label;
+        hc.max_replay_s = 24 * 3600.0;  // local use: allow long ranges
+        auto api = std::make_shared<sema::HistoryApi>(preload_history(o, cfg, in_area, *airports), airports, hc);
+        sc.api = [api](const sema::ApiRequest& req) { return api->handle(req); };
         server = std::make_unique<sema::LiveServer>(sc);
         server->start();
         live = std::make_unique<sema::LiveState>(*area);
@@ -288,6 +335,7 @@ int run(const Options& o) {
         const auto r = tracker.process(*snap);
         const auto ev = detector.process(*snap, tracker, r);
         finished.insert(finished.end(), ev.closed.begin(), ev.closed.end());
+        for (auto& f : flight_log.update(*snap, r, tracker)) flights.push_back(std::move(f));
         if (server) {
             if (!ev.empty()) server->publish("events", detector.events_json().dump());
             live->update(*snap, tracker);
@@ -316,6 +364,20 @@ int run(const Options& o) {
     }
     if (server) server->stop();
     for (const auto& e : detector.active()) finished.push_back(e);  // still open at the end
+    if (o.stats) {
+        for (auto& f : flight_log.flush()) flights.push_back(std::move(f));
+        sema::StatsQuery q;
+        q.from = flights.empty() ? 0.0 : flights.front().first_seen;
+        q.to = 0.0;
+        for (const auto& f : flights) {
+            q.from = std::min(q.from, f.first_seen);
+            q.to = std::max(q.to, f.first_seen + 1.0);
+        }
+        auto j = sema::compute_traffic_stats(flights, *airports, q);
+        j["corridors"]["cells"] = nlohmann::json::array();  // long; the map shows them
+        std::cout << j.dump(2) << '\n';
+        return 0;
+    }
     if (o.json) {
         auto j = tracker.metrics().to_json();
         if (o.events) {

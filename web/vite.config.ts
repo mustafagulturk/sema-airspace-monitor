@@ -8,6 +8,7 @@ export default defineConfig({
       "/ws": { target: backend, ws: true, changeOrigin: true },
       "/boundary.geojson": { target: backend, changeOrigin: true },
       "/healthz": { target: backend, changeOrigin: true },
+      "/api": { target: backend, changeOrigin: true },
     },
   },
   build: {

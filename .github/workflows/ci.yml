@@ -84,3 +84,25 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  docker:
+    name: docker image + compose config
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the runtime image
+        run: docker build -t sema:ci .
+      - name: Smoke test (replay the synthetic recording, query the API)
+        run: |
+          docker run -d --name sema-smoke -p 8080:8080 -v "$PWD/tests/fixtures:/fx:ro" --entrypoint sema_replay sema:ci \
+            /fx/replay_synthetic.jsonl --serve 8080 --addr 0.0.0.0 --data-dir /app/data --web-root /app/web --speed 100
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8080/ | grep -q '<title>'
+          curl -fsS http://127.0.0.1:8080/api/status | grep -q '"mode":"replay"'
+          curl -fsS http://127.0.0.1:8080/api/stats | grep -q '"totals"'
+          docker rm -f sema-smoke
+      - name: Validate docker-compose.prod.yml
+        run: |
+          printf 'OPENSKY_CLIENT_ID=x\nOPENSKY_CLIENT_SECRET=x\nPOSTGRES_PASSWORD=x\nGRAFANA_ADMIN_PASSWORD=x\nSEMA_DOMAIN=example.org\n' > ci.env
+          docker compose --env-file ci.env -f docker-compose.prod.yml config -q
+          python3 -c "import json; json.load(open('deploy/grafana/dashboards/sema.json'))"

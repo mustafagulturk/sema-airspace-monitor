@@ -32,6 +32,13 @@ export const COVERAGE_STOPS: [number, string][] = [
   [1, "#2b8a3e"],
 ];
 
+/** Sequential corridor ramp (one hue, light to dark), level 0..1 (sqrt scale). */
+export const CORRIDOR_STOPS: [number, string][] = [
+  [0, "#d0ebff"],
+  [0.5, "#4dabf7"],
+  [1, "#1864ab"],
+];
+
 const altColor: ExpressionSpecification = [
   "case",
   ["get", "ground"],
@@ -84,6 +91,8 @@ export interface Overlays {
   setSelected(icao24: string | null): void;
   /** Shows one anomaly event's track and markers, or clears them. */
   setEvent(geometry: EventGeometry | null): void;
+  setCorridors(data: GeoJSON.FeatureCollection): void;
+  setCorridorsVisible(on: boolean): void;
 }
 
 /** Adds all Semâ sources and layers. Call after the style has loaded. */
@@ -95,6 +104,7 @@ export function addOverlays(map: maplibregl.Map, style: StyleSpecification): Ove
   const firstSymbol = style.layers.find((l) => l.type === "symbol")?.id;
 
   map.addSource("coverage", { type: "geojson", data: EMPTY });
+  map.addSource("corridors", { type: "geojson", data: EMPTY });
   map.addSource("boundary", { type: "geojson", data: EMPTY });
   map.addSource("trails", { type: "geojson", data: EMPTY });
   map.addSource("trail-selected", { type: "geojson", data: EMPTY });
@@ -117,6 +127,19 @@ export function addOverlays(map: maplibregl.Map, style: StyleSpecification): Ove
         ] as ExpressionSpecification,
         "fill-opacity": ["case", ["<", ["get", "level"], 0], 0.32, 0.45],
         "fill-outline-color": ["case", ["<", ["get", "level"], 0], "rgba(201,42,42,0.6)", "rgba(43,138,62,0.25)"],
+      },
+    },
+    firstSymbol,
+  );
+  map.addLayer(
+    {
+      id: "corridor-fill",
+      type: "fill",
+      source: "corridors",
+      layout: { visibility: "none" },
+      paint: {
+        "fill-color": ["interpolate", ["linear"], ["get", "level"], ...CORRIDOR_STOPS.flat()] as ExpressionSpecification,
+        "fill-opacity": ["interpolate", ["linear"], ["get", "level"], 0, 0.35, 1, 0.7],
       },
     },
     firstSymbol,
@@ -264,6 +287,12 @@ export function addOverlays(map: maplibregl.Map, style: StyleSpecification): Ove
       void src("event-track")?.setData(geometry?.track ?? EMPTY);
       void src("event-points")?.setData(geometry?.points ?? EMPTY);
     },
+    setCorridors(data) {
+      void src("corridors")?.setData(data);
+    },
+    setCorridorsVisible(on) {
+      map.setLayoutProperty("corridor-fill", "visibility", on ? "visible" : "none");
+    },
     setSelected(icao24) {
       map.setFilter("aircraft-selected-halo", ["==", ["get", "icao24"], icao24 ?? ""]);
     },
@@ -277,4 +306,8 @@ export function altitudeGradientCss(): string {
 
 export function coverageGradientCss(): string {
   return `linear-gradient(to right, ${COVERAGE_STOPS.map(([v, c]) => `${c} ${v * 100}%`).join(", ")})`;
+}
+
+export function corridorGradientCss(): string {
+  return `linear-gradient(to right, ${CORRIDOR_STOPS.map(([v, c]) => `${c} ${v * 100}%`).join(", ")})`;
 }

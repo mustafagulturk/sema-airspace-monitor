@@ -1,6 +1,7 @@
 #include "sema/live_server.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <mutex>
@@ -18,6 +19,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
@@ -46,6 +48,10 @@ struct Hub {
     mutable std::mutex mu;
     std::vector<std::pair<std::string, Message>> latest;  // first-publish order
     std::vector<std::weak_ptr<WsSession>> sessions;
+    // API worker, owned by LiveServer::Impl and joined in stop() after the I/O
+    // thread, so it outlives every handler that can reach it.
+    net::thread_pool* workers = nullptr;
+    std::atomic<std::size_t> api_in_flight{0};
 
     explicit Hub(LiveServerConfig c) : cfg(std::move(c)) {}
 
@@ -148,6 +154,14 @@ std::string_view path_of(std::string_view target) {
     return q == std::string_view::npos ? target : target.substr(0, q);
 }
 
+std::string_view query_of(std::string_view target) {
+    const auto q = target.find('?');
+    if (q == std::string_view::npos) return {};
+    auto rest = target.substr(q + 1);
+    if (const auto h = rest.find('#'); h != std::string_view::npos) rest = rest.substr(0, h);
+    return rest;
+}
+
 class HttpSession : public std::enable_shared_from_this<HttpSession> {
 public:
     HttpSession(tcp::socket&& socket, std::shared_ptr<Hub> hub) : stream_(std::move(socket)), hub_(std::move(hub)) {}
@@ -210,6 +224,9 @@ private:
             const nlohmann::json j{{"status", "ok"}, {"clients", hub_->clients()}};
             return send(text_response(req, http::status::ok, j.dump() + "\n", "application/json"));
         }
+        if (hub_->cfg.api && hub_->workers != nullptr && (path.starts_with("/api/") || path == "/metrics")) {
+            return handle_api(std::move(req));
+        }
 
         std::optional<std::filesystem::path> file;
         if (auto it = hub_->cfg.files.find(std::string(path)); it != hub_->cfg.files.end()) {
@@ -245,6 +262,36 @@ private:
         send(std::move(res));
     }
 
+    // Runs the API handler on the worker thread, then answers on this
+    // session's strand.
+    void handle_api(http::request<http::string_body>&& req) {
+        if (hub_->api_in_flight.fetch_add(1) >= hub_->cfg.max_api_in_flight) {
+            --hub_->api_in_flight;
+            return send(text_response(req, http::status::service_unavailable, "busy\n"));
+        }
+        ApiRequest ar;
+        ar.path = std::string(path_of(req.target()));
+        ar.query = parse_query(std::string(query_of(req.target())));
+        auto rq = std::make_shared<http::request<http::string_body>>(std::move(req));
+        net::post(*hub_->workers, [self = shared_from_this(), rq, ar = std::move(ar)] {
+            std::optional<ApiResponse> r;
+            try {
+                r = self->hub_->cfg.api(ar);
+            } catch (const std::exception& e) {
+                r = ApiResponse{500, "text/plain; charset=utf-8", std::string("internal error: ") + e.what() + "\n", 0};
+            }
+            --self->hub_->api_in_flight;
+            net::post(self->stream_.get_executor(), [self, rq, r = std::move(r)] {
+                if (!r) return self->send(text_response(*rq, http::status::not_found, "not found\n"));
+                auto res = text_response(*rq, static_cast<http::status>(r->status), r->body, r->content_type);
+                if (r->max_age_s > 0) {
+                    res.set(http::field::cache_control, "public, max-age=" + std::to_string(r->max_age_s));
+                }
+                self->send(std::move(res));
+            });
+        });
+    }
+
     template <class Body>
     void send(http::response<Body>&& res) {
         auto sp = std::make_shared<http::response<Body>>(std::move(res));
@@ -275,13 +322,14 @@ private:
 struct LiveServer::Impl {
     std::shared_ptr<Hub> hub;
     net::io_context ioc{1};
+    net::thread_pool workers{1};
     tcp::acceptor acceptor{ioc};
     std::thread thread;
     std::uint16_t port = 0;
     bool started = false;
     bool stopped = false;
 
-    explicit Impl(LiveServerConfig cfg) : hub(std::make_shared<Hub>(std::move(cfg))) {}
+    explicit Impl(LiveServerConfig cfg) : hub(std::make_shared<Hub>(std::move(cfg))) { hub->workers = &workers; }
 
     void do_accept() {
         acceptor.async_accept(net::make_strand(ioc), [this](beast::error_code ec, tcp::socket socket) {
@@ -323,6 +371,9 @@ void LiveServer::stop() {
     im.stopped = true;
     im.ioc.stop();
     if (im.thread.joinable()) im.thread.join();
+    // Queued API work is dropped; a handler already running finishes first.
+    im.workers.stop();
+    im.workers.join();
     beast::error_code ec;
     std::ignore = im.acceptor.close(ec);
 }

@@ -15,6 +15,7 @@
 //   SEMA_LIVE_ADDR          address the live map server listens on (default 127.0.0.1)
 //   SEMA_WEB_ROOT           built web map to serve (default ./web/dist)
 //   SEMA_EVENTS_FILE        same as --events
+//   SEMA_MAX_REPLAY_HOURS   longest range the map may ask to replay (default 4)
 // Flags:
 //   --once           run a single cycle and exit
 //   --dry-run        do not touch the database; print a summary instead
@@ -28,6 +29,12 @@
 // holding, route deviation, signal loss) and logs their counters; every new
 // event is logged as an "anomaly" line and stored in anomaly_events. Full
 // tracker and detector metrics are logged once an hour.
+// Finished tracks become flight records (with departure/arrival airport when
+// seen) in the `flights` table.
+//
+// With --serve the same server also answers /api/status, /api/replay and
+// /api/stats (history from PostgreSQL, or from memory with --dry-run) and
+// /metrics in Prometheus format.
 
 #include <pthread.h>
 
@@ -50,14 +57,18 @@
 #include "sema/aircraft_registry.hpp"
 #include "sema/anomaly.hpp"
 #include "sema/clock.hpp"
+#include "sema/flights.hpp"
 #include "sema/geo.hpp"
+#include "sema/history.hpp"
 #include "sema/http.hpp"
 #include "sema/live.hpp"
 #include "sema/live_server.hpp"
 #include "sema/military_filter.hpp"
 #include "sema/opensky_client.hpp"
+#include "sema/pg_history.hpp"
 #include "sema/pg_store.hpp"
 #include "sema/pipeline.hpp"
+#include "sema/prom_metrics.hpp"
 #include "sema/snapshot_io.hpp"
 #include "sema/tracker.hpp"
 
@@ -80,6 +91,7 @@ struct Options {
     long serve_port = -1;  // -1: no live map server
     std::string serve_addr = "127.0.0.1";
     std::string web_root = "web/dist";
+    long max_replay_hours = 4;
     bool once = false;
     bool dry_run = false;
 };
@@ -147,6 +159,7 @@ Options parse_options(int argc, char** argv) {
     o.min_interval_s = env_long("SEMA_MIN_INTERVAL_S", o.min_interval_s, 5);
     o.daily_credits = env_long("SEMA_DAILY_CREDITS", o.daily_credits, 1);
     o.retention_hours = env_long("SEMA_RETENTION_HOURS", o.retention_hours, 1);
+    o.max_replay_hours = env_long("SEMA_MAX_REPLAY_HOURS", o.max_replay_hours, 1);
     if (o.client_id.empty() || o.client_secret.empty()) {
         throw std::runtime_error("OPENSKY_CLIENT_ID and OPENSKY_CLIENT_SECRET must be set");
     }
@@ -171,6 +184,29 @@ std::chrono::seconds next_interval(const Options& o, int cost, std::optional<int
         s = std::max(s, static_cast<long>(until_next_utc_midnight(now).count()));
     }
     return std::chrono::seconds(s);
+}
+
+double unix_now() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); }
+
+std::shared_ptr<const sema::AirportIndex> load_airports(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) return std::make_shared<const sema::AirportIndex>();
+    return std::make_shared<const sema::AirportIndex>(sema::AirportIndex::load(path));
+}
+
+// Prometheus metrics updated once per cycle.
+void record_cycle_metrics(sema::PromRegistry& prom, const sema::FetchResult& r) {
+    prom.add_counter("sema_opensky_requests_total", "OpenSky /states/all requests by result", 1.0,
+                     {{"status", sema::to_string(r.status)}});
+    prom.add_counter("sema_opensky_request_seconds_total", "Total time spent in OpenSky requests (with retries)",
+                     std::chrono::duration<double>(r.latency).count());
+    prom.add_counter("sema_opensky_attempts_total", "HTTP attempts made, including retries", r.attempts);
+    if (r.status == sema::FetchResult::Status::Ok) {
+        prom.add_counter("sema_opensky_credits_used_total", "OpenSky credits spent", r.credits_cost);
+    }
+    if (r.credits_remaining) {
+        prom.set_gauge("sema_opensky_credits_remaining", "OpenSky credits left today (X-Rate-Limit-Remaining)",
+                       *r.credits_remaining);
+    }
 }
 
 void log_line(nlohmann::json j) {
@@ -236,6 +272,20 @@ int run(const Options& opt) {
     std::unique_ptr<sema::EventLog> event_log;
     if (!opt.events_file.empty()) event_log = std::make_unique<sema::EventLog>(opt.events_file);
 
+    // Flight log and history (replay + statistics) for the web map.
+    const auto airports = load_airports(data_dir / "airports_tr.json");
+    sema::FlightLog flight_log(airports.get());
+    std::shared_ptr<sema::HistorySource> history;
+    if (store) {
+        history = std::make_shared<sema::PgHistory>(opt.database_url);
+    } else {
+        history = std::make_shared<sema::MemoryHistory>();
+    }
+    sema::PromRegistry prom;
+    prom.set_gauge("sema_build_info", "Build information", 1.0, {{"version", "0.5.0"}});
+    prom.set_gauge("sema_start_time_seconds", "Collector start time (Unix seconds)", unix_now());
+    prom.set_gauge("sema_dry_run", "1 when running without a database", opt.dry_run ? 1.0 : 0.0);
+
     sema::SystemClock clock;
     SignalWatcher signals(clock);  // before any other thread starts, so they inherit the blocked signals
 
@@ -248,6 +298,28 @@ int run(const Options& opt) {
         sc.port = static_cast<std::uint16_t>(opt.serve_port);
         sc.web_root = opt.web_root;
         sc.files["/boundary.geojson"] = data_dir / "turkey_boundary.geojson";
+        sema::HistoryApiConfig hc;
+        hc.mode = "live";
+        hc.label = opt.dry_run ? "veritabanısız deneme" : "";
+        hc.max_replay_s = static_cast<double>(opt.max_replay_hours) * 3600.0;
+        auto api = std::make_shared<sema::HistoryApi>(history, airports, hc);
+        sc.api = [api, history, &prom](const sema::ApiRequest& req) -> std::optional<sema::ApiResponse> {
+            if (req.path == "/metrics") {
+                prom.set_gauge("sema_process_resident_memory_bytes", "Resident memory of the collector",
+                               static_cast<double>(sema::process_rss_bytes()));
+                try {
+                    const auto streak = history->collection_streak();
+                    prom.set_gauge("sema_collection_streak_seconds",
+                                   "Length of the current unbroken stretch of data collection (no gap over 15 min)",
+                                   streak ? streak->to - streak->from : 0.0);
+                } catch (const std::exception&) {
+                    // Database down: keep the last value, count the error.
+                    prom.add_counter("sema_db_errors_total", "Database write errors", 1.0);
+                }
+                return sema::ApiResponse{200, "text/plain; version=0.0.4; charset=utf-8", prom.render(), 0};
+            }
+            return api->handle(req);
+        };
         server = std::make_unique<sema::LiveServer>(sc);
         server->start();
         server->publish("hello", sema::live_hello_json("live", "").dump());
@@ -339,6 +411,29 @@ int run(const Options& opt) {
             }
             line["anomalies"] = {{"opened", ev.opened.size()}, {"closed", ev.closed.size()},
                                  {"active", detector.active().size()}};
+            const auto ended_flights = flight_log.update(filtered, tr, tracker);
+            history->record(filtered, ended_flights);
+            if (server) history->set_open_flights(flight_log.open_flights());
+            if (store && !ended_flights.empty()) {
+                try {
+                    store->insert_flights(ended_flights);
+                } catch (const std::exception& e) {
+                    line["db_error"] = e.what();
+                    prom.add_counter("sema_db_errors_total", "Database write errors", 1.0);
+                }
+            }
+            prom.add_counter("sema_flights_completed_total", "Flights whose track ended", ended_flights.size());
+            prom.set_gauge("sema_flights_open", "Flights in progress", flight_log.open_count());
+            prom.set_gauge("sema_last_data_time_seconds", "OpenSky time of the newest snapshot", r.snapshot->time);
+            prom.set_gauge("sema_states_in_box", "State vectors in the query box (before filtering)", stats.total);
+            prom.set_gauge("sema_aircraft_kept", "Civil aircraft inside the area after filtering", stats.kept);
+            prom.add_counter("sema_dropped_military_total", "Military/government aircraft dropped (never stored)",
+                             stats.dropped_military);
+            prom.set_gauge("sema_tracks", "Tracks by state", tr.tracked, {{"state", "tracked"}});
+            prom.set_gauge("sema_tracks", "Tracks by state", tr.confirmed, {{"state", "confirmed"}});
+            prom.set_gauge("sema_tracks", "Tracks by state", tr.coasting, {{"state", "coasting"}});
+            prom.set_gauge("sema_tracker_processing_seconds", "Tracker time for the last snapshot", tr.processing_us * 1e-6);
+            prom.add_counter("sema_quality_rejects_total", "Position reports rejected by data quality checks", tr.rejected);
             if (server) {
                 live.update(filtered, tracker);
                 const double now_s =
@@ -346,6 +441,7 @@ int run(const Options& opt) {
                 server->publish("coverage", live.coverage_json().dump());
                 server->publish("snapshot", live.snapshot_json({now_s, 1.0}).dump());
                 line["live_clients"] = server->client_count();
+                prom.set_gauge("sema_live_clients", "Connected WebSocket clients", server->client_count());
             }
             line["tracks"] = {{"tracked", tr.tracked},     {"confirmed", tr.confirmed}, {"coasting", tr.coasting},
                               {"created", tr.created},     {"ended", tr.ended.size()},  {"reacquired", tr.reacquired},
@@ -369,12 +465,15 @@ int run(const Options& opt) {
                 if (started - last_rollup >= 1h) {
                     const auto pruned = store->rollup_and_prune(std::chrono::hours(opt.retention_hours));
                     line["pruned_rows"] = pruned;
+                    prom.add_counter("sema_pruned_rows_total", "Raw position rows rolled up and deleted", pruned);
                     last_rollup = started;
                 }
             } catch (const std::exception& e) {
                 line["db_error"] = e.what();
+                prom.add_counter("sema_db_errors_total", "Database write errors", 1.0);
             }
         }
+        record_cycle_metrics(prom, r);
 
         std::chrono::seconds wait = next_interval(opt, cost, r.credits_remaining, Clock::now());
         if (r.status == sema::FetchResult::Status::RateLimited) {
@@ -386,6 +485,7 @@ int run(const Options& opt) {
             break;
         }
         line["next_in_s"] = wait.count();
+        prom.set_gauge("sema_next_request_in_seconds", "Planned wait before the next OpenSky request", wait.count());
         log_line(line);
         if (Clock::now() - last_metrics_log >= 1h) {
             log_line({{"event", "tracker_metrics"}, {"metrics", tracker.metrics().to_json()}});
@@ -405,6 +505,14 @@ int run(const Options& opt) {
 
     log_line({{"event", "tracker_metrics"}, {"metrics", tracker.metrics().to_json()}});
     log_line({{"event", "anomaly_metrics"}, {"metrics", detector.metrics().to_json()}});
+    // Flights still in the air are stored as "open" so a restart loses nothing.
+    if (store) {
+        try {
+            store->insert_flights(flight_log.flush());
+        } catch (const std::exception& e) {
+            log_line({{"event", "db_error"}, {"error", e.what()}});
+        }
+    }
     log_line({{"event", "stop"}, {"exit_code", exit_code}});
     return exit_code;
 }

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -208,4 +209,74 @@ TEST_F(LiveServerTest, FailsToBindAPortInUse) {
     LiveServer b(cfg);
     // SO_REUSEADDR does not allow two listeners on Linux.
     EXPECT_THROW(b.start(), std::runtime_error);
+}
+
+TEST_F(LiveServerTest, AnswersApiRequestsOnTheWorkerThread) {
+    auto cfg = config();
+    std::atomic<int> calls{0};
+    const auto io_thread_hint = std::this_thread::get_id();
+    std::atomic<bool> ran_on_other_thread{false};
+    cfg.api = [&](const ApiRequest& req) -> std::optional<ApiResponse> {
+        ++calls;
+        ran_on_other_thread = std::this_thread::get_id() != io_thread_hint;
+        if (req.path == "/metrics") return ApiResponse{200, "text/plain; version=0.0.4", "sema_up 1\n", 0};
+        if (req.path == "/api/echo") {
+            return ApiResponse{200, "application/json", R"({"from":")" + req.query.at("from") + "\"}", 60};
+        }
+        if (req.path == "/api/boom") throw std::runtime_error("kaput");
+        return std::nullopt;
+    };
+    LiveServer server(cfg);
+    server.start();
+
+    auto r = get(server.port(), "/api/echo?from=12%2034&x=1");
+    EXPECT_EQ(r.result(), http::status::ok);
+    EXPECT_EQ(r.body(), R"({"from":"12 34"})");
+    EXPECT_EQ(r[http::field::content_type], "application/json");
+    EXPECT_EQ(r[http::field::cache_control], "public, max-age=60");
+    EXPECT_TRUE(ran_on_other_thread);
+
+    r = get(server.port(), "/metrics");
+    EXPECT_EQ(r.result(), http::status::ok);
+    EXPECT_EQ(r.body(), "sema_up 1\n");
+    EXPECT_EQ(r[http::field::cache_control], "no-cache");
+
+    EXPECT_EQ(get(server.port(), "/api/unknown").result(), http::status::not_found);
+    r = get(server.port(), "/api/boom");
+    EXPECT_EQ(r.result(), http::status::internal_server_error);
+    EXPECT_NE(r.body().find("kaput"), std::string::npos);
+    EXPECT_EQ(calls.load(), 4);
+
+    // Static files and health still work.
+    EXPECT_EQ(get(server.port(), "/healthz").result(), http::status::ok);
+}
+
+TEST_F(LiveServerTest, ApiPathsAre404WithoutAHandler) {
+    LiveServer server(config());
+    server.start();
+    EXPECT_EQ(get(server.port(), "/api/status").result(), http::status::not_found);
+    EXPECT_EQ(get(server.port(), "/metrics").result(), http::status::not_found);
+}
+
+TEST_F(LiveServerTest, StopsCleanlyWithASlowApiCallInFlight) {
+    auto cfg = config();
+    std::atomic<bool> entered{false};
+    cfg.api = [&](const ApiRequest&) -> std::optional<ApiResponse> {
+        entered = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        return ApiResponse{200, "application/json", "{}", 0};
+    };
+    auto server = std::make_unique<LiveServer>(cfg);
+    server->start();
+    const auto port = server->port();
+    std::thread client([port] {
+        try {
+            (void)get(port, "/api/slow");
+        } catch (const std::exception&) {
+            // The server may close the connection while stopping.
+        }
+    });
+    ASSERT_TRUE(wait_for([&] { return entered.load(); }));
+    server.reset();  // must wait for the handler, not crash
+    client.join();
 }

@@ -21,6 +21,11 @@
         <span id="st-age" class="st-age"></span>
         <span id="st-conn" class="st-conn">Bağlanıyor…</span>
       </div>
+      <nav class="modes" aria-label="Görünüm">
+        <button type="button" class="btn mode" id="mode-live" aria-pressed="true">Canlı</button>
+        <button type="button" class="btn mode" id="mode-history" aria-pressed="false">Geçmiş</button>
+        <button type="button" class="btn mode" id="mode-stats" aria-pressed="false">İstatistik</button>
+      </nav>
       <div class="actions">
         <button type="button" id="btn-events" class="btn btn-events" aria-pressed="false" aria-controls="events">Olaylar <span id="events-badge" class="badge" hidden></span></button>
         <button type="button" id="btn-coverage" class="btn" aria-pressed="false" aria-label="Kapsama haritasını göster/gizle">Kapsama</button>
@@ -52,6 +57,89 @@
         <div class="legend-row"><span class="sw sw-gap"></span><span><b>Boşluk:</b> son 24 saatte bu hücreden hiç konum gelmedi (alıcı kapsaması yok ya da trafik yok)</span></div>
       </section>
     </div>
+
+    <section id="history-bar" class="hbar" aria-label="Geçmişi oynat" hidden>
+      <div class="hbar-row">
+        <label class="field">Başlangıç <input type="datetime-local" id="h-start" step="60" /></label>
+        <label class="field">Süre
+          <select id="h-dur">
+            <option value="1800">30 dk</option>
+            <option value="3600" selected>1 sa</option>
+            <option value="7200">2 sa</option>
+            <option value="14400">4 sa</option>
+          </select>
+        </label>
+        <button type="button" id="h-load" class="btn">Yükle</button>
+        <span id="h-info" class="muted small h-info"></span>
+      </div>
+      <div class="hbar-row">
+        <button type="button" id="h-play" class="btn btn-icon" aria-label="Oynat" disabled>▶</button>
+        <input type="range" id="h-seek" class="h-seek" min="0" max="1" step="1" value="0" aria-label="Oynatma zamanı" disabled />
+        <select id="h-speed" aria-label="Oynatma hızı">
+          <option value="1">x1</option>
+          <option value="10">x10</option>
+          <option value="30" selected>x30</option>
+          <option value="60">x60</option>
+          <option value="120">x120</option>
+        </select>
+        <span id="h-time" class="mono small h-time">—</span>
+      </div>
+    </section>
+
+    <aside id="stats" class="panel stats" tabindex="-1" aria-labelledby="s-title" hidden>
+      <div class="panel-grip" aria-hidden="true"></div>
+      <div class="panel-head">
+        <div>
+          <h2 id="s-title">İstatistik</h2>
+          <div id="s-sub" class="muted small"></div>
+        </div>
+        <button type="button" id="stats-close" class="btn btn-icon" aria-label="İstatistiği kapat">✕</button>
+      </div>
+      <div class="seg" role="group" aria-label="Zaman aralığı">
+        <button type="button" class="btn" data-range="86400" aria-pressed="false">24 saat</button>
+        <button type="button" class="btn" data-range="604800" aria-pressed="true">7 gün</button>
+        <button type="button" class="btn" data-range="2592000" aria-pressed="false">30 gün</button>
+      </div>
+      <div id="s-note" class="note" hidden></div>
+      <div id="s-body">
+        <div class="kpis">
+          <div class="kpi"><div class="kpi-v" id="k-flights">—</div><div class="kpi-l">uçuş</div></div>
+          <div class="kpi"><div class="kpi-v" id="k-aircraft">—</div><div class="kpi-l">farklı uçak</div></div>
+          <div class="kpi"><div class="kpi-v" id="k-perday">—</div><div class="kpi-l">günlük ortalama</div></div>
+          <div class="kpi"><div class="kpi-v" id="k-peak">—</div><div class="kpi-l">en yoğun saat</div></div>
+        </div>
+        <h3>Günlük uçuş sayısı</h3>
+        <div id="s-daily" class="chart-box"></div>
+        <h3>Saatlere göre <span class="muted small">(günde ortalama havadaki uçuş, TSİ)</span></h3>
+        <div id="s-hours" class="chart-box"></div>
+        <h3>Havalimanı hareketleri</h3>
+        <table class="tbl" id="s-airports">
+          <thead><tr><th scope="col">Havalimanı</th><th scope="col">Kalkış</th><th scope="col">İniş</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <h3>En yoğun rotalar</h3>
+        <table class="tbl" id="s-routes">
+          <thead><tr><th scope="col">Rota</th><th scope="col">Uçuş</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <h3>Koridorlar</h3>
+        <div class="corridor-row">
+          <div class="corridor-legend">
+            <div class="legend-bar" id="corr-bar"></div>
+            <div class="legend-scale"><span>1</span><span id="corr-max">en çok</span></div>
+          </div>
+          <button type="button" id="btn-corridors" class="btn" aria-pressed="true">Haritada</button>
+        </div>
+        <p class="small muted">0,25°'lik her hücreden geçen uçuş sayısı. Kapsama boşluğu olan bölgelerde (doğu) trafik eksik görünür.</p>
+        <details class="small method">
+          <summary>Nasıl hesaplanıyor?</summary>
+          <p>Bir <b>uçuş</b>, iz takibinde bir izin ilk ve son konumu arasıdır; yalnızca havada en az iki konumu olanlar sayılır. Sinyal 10 dakikadan uzun kesilirse aynı uçak iki uçuş sayılabilir.</p>
+          <p><b>Kalkış/iniş</b>: ilk/son konum bir havalimanına 12 km'den yakın, havalimanının en çok 1500 m üstünde (ya da yerde) ve tırmanış/alçalış yönü uygunsa. Hava üsleri listede yoktur; askerî ve devlet uçakları en başta atıldığı için hiçbir sayıya girmez.</p>
+          <p>Saatler Türkiye saatidir (UTC+3). Süren uçuşlar da sayıya katılır.</p>
+        </details>
+      </div>
+      <p id="s-uptime" class="small muted uptime"></p>
+    </aside>
 
     <aside id="panel" class="panel" tabindex="-1" aria-labelledby="p-title" hidden>
       <div class="panel-grip" aria-hidden="true"></div>
@@ -116,6 +204,9 @@
       <p id="about-attribution">Veri: OpenSky Network.</p>
       <p class="small">Schäfer, Strohmeier, Lenders, Martinovic, Wilhelm, “Bringing Up OpenSky: A Large-scale ADS-B Sensor Network for Research”, <i>IPSN 2014</i>.</p>
       <p class="small"><a href="https://opensky-network.org" target="_blank" rel="noopener">opensky-network.org</a></p>
+      <h3>Sistem</h3>
+      <p id="about-uptime" class="small">—</p>
+      <p class="small">Kaynak kod: <a href="https://github.com/mustafagulturk/sema-airspace-monitor" target="_blank" rel="noopener">github.com/mustafagulturk/sema-airspace-monitor</a></p>
     </dialog>
 
     <script type="module" src="/src/main.ts"></script>

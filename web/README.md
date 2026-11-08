@@ -23,7 +23,7 @@ npm ci
 npm run dev
 ```
 
-Vite geliştirme sunucusu `/ws`, `/boundary.geojson` ve `/healthz` isteklerini `http://127.0.0.1:8080` adresine yönlendirir.
+Vite geliştirme sunucusu `/ws`, `/api`, `/boundary.geojson` ve `/healthz` isteklerini `http://127.0.0.1:8080` adresine yönlendirir.
 
 ## Derleme ve test
 

@@ -5,6 +5,8 @@
 Semâ, Türkiye üzerindeki gerçek **sivil** uçak trafiğini [OpenSky Network](https://opensky-network.org)'ün
 ücretsiz verisiyle canlı izleyen bir C++20 sistemidir. Simülasyon yoktur, her şey gerçek veriyle çalışır.
 
+**Canlı site:** henüz yayında değil; VPS'e kurulunca adres buraya eklenecek (kurulum: [Yayın](#yayın-vps-alan-adı-https)).
+
 > **English summary.** Semâ is a C++20 system that tracks live civil air traffic over Turkey using
 > OpenSky Network data. Phase 1 collects state vectors with an OAuth2, quota-aware OpenSky client,
 > filters them to Turkish land plus territorial sea with a polygon test, drops military and government
@@ -21,7 +23,14 @@ detection on the tracker's filtered fixes: emergency squawks (7500/7600/7700, co
 reports), rapid descent, holding/circling (staying inside a small circle at speed, robust to the
 ~65 s sampling), turn-backs at cruise and long signal loss in well-covered cells. Events are stored
 in PostGIS, pushed to the map's event list with the aircraft's track, and counted per 1,000
-airborne aircraft-hours so thresholds can be tuned on real recordings. Non-commercial, see *Ethical and legal
+airborne aircraft-hours so thresholds can be tuned on real recordings. Phase 5 adds history and
+deployment: every track becomes a flight record with departure/arrival airport (civil airports only,
+air bases excluded) and the corridor cells it crossed; a JSON API on a worker thread serves range
+replays from PostGIS (interpolated in the browser at x1–x120) and traffic statistics (daily flights,
+busiest hours, airport movements, top routes, corridor heat map); `/metrics` exposes quota, latency,
+errors, memory and an unbroken-collection streak to Prometheus/Grafana; a multi-stage Docker image
+and one Compose file run PostGIS, the collector, Caddy (automatic HTTPS), Prometheus and Grafana on
+a single VPS. Non-commercial, see *Ethical and legal
 > limits* below.
 
 ## Durum
@@ -30,11 +39,38 @@ airborne aircraft-hours so thresholds can be tuned on real recordings. Non-comme
 |---|---|---|
 | 1 | Veri toplama: OpenSky istemcisi, Türkiye filtresi, askeri/devlet filtresi, PostGIS, CI | Tamamlandı |
 | 2 | İz takibi: Kalman filtresi, sinyal kaybı, veri kalitesi, ölçümler | Tamamlandı (gerçek veriyle ölçüm bekliyor) |
-| 3 | MapLibre ile canlı harita (WebSocket), detay paneli, kapsama haritası | **Geliştiriliyor** |
+| 3 | MapLibre ile canlı harita (WebSocket), detay paneli, kapsama haritası | Tamamlandı |
 | 4 | Anomali tespiti: acil durum kodları, ani irtifa kaybı, bekleme, rota sapması, uzun sinyal kaybı; olay listesi | Tamamlandı (eşikler gerçek veriyle ayarlanmayı bekliyor) |
-| 5 | Tekrar oynatma, istatistik, Docker Compose ile yayın, Prometheus/Grafana | Planlandı |
+| 5 | Geçmişi tekrar oynatma, istatistikler, Docker Compose ile yayın, HTTPS, Prometheus/Grafana | Tamamlandı (VPS'e kurulum ve gerçek veriyle sayılar bekliyor) |
 
-## Mimari (Aşama 1)
+## Sistem mimarisi
+
+```mermaid
+flowchart LR
+  OS[OpenSky /states/all] -->|OAuth2, kota| C
+  subgraph C[sema_collector · C++20]
+    direction TB
+    F[Türkiye çokgeni +<br/>askeri/devlet filtresi] --> T[Tracker<br/>Kalman KF / EKF]
+    T --> A[AnomalyDetector]
+    T --> FL[FlightLog<br/>kalkış/iniş, koridor]
+    T --> L[LiveState]
+    H[HistoryApi<br/>iş parçacığı] 
+    M[PromRegistry]
+  end
+  F -->|positions, fetch_log| DB[(PostgreSQL<br/>+ PostGIS)]
+  FL -->|flights| DB
+  A -->|anomaly_events| DB
+  DB --> H
+  L -->|WebSocket /ws| CAD
+  H -->|/api/replay, /api/stats| CAD
+  CAD[Caddy · HTTPS] --> W[Tarayıcı<br/>TypeScript + MapLibre]
+  M -->|/metrics| P[Prometheus] --> G[Grafana]
+  CAD -->|/grafana| G
+```
+
+Askeri ve devlet uçakları ilk kutuda atılır; sağdaki hiçbir bileşen onları görmez.
+
+## Veri toplama (Aşama 1)
 
 ```
 OpenSky /states/all ──► OpenSkyClient ──► parse_states ──► filter_states ──► PgStore ──► PostgreSQL + PostGIS
@@ -217,6 +253,68 @@ verir. Eşikler gerçek bir kayıtla şöyle ayarlanır:
 Gerçek veriyle yapılan ayar ve sonuçları "Ölçümler" bölümüne eklenecek; şu anki değerler yukarıdaki
 gerekçelere dayanan başlangıç değerleridir.
 
+## Geçmiş, istatistik ve yayın (Aşama 5)
+
+```
+Tracker ──► FlightLog ──► flights (PostGIS) ──┐
+                                              ├──► HistoryApi (iş parçacığı) ──► /api/stats   ──► İstatistik ekranı
+positions (ham, 7 gün) ───────────────────────┤                               ──► /api/replay  ──► Geçmiş ekranı
+fetch_log ────────────────────────────────────┘                               ──► /api/status  ──► kesintisiz süre
+PromRegistry ──► /metrics ──► Prometheus ──► Grafana
+```
+
+| Bileşen | Dosya | Görev |
+|---|---|---|
+| `FlightLog` | `src/flights.cpp` | İzleyicinin her izini bir uçuş kaydına çevirir: ilk/son konum, irtifa aralığı, kalkış ve iniş havalimanı, geçtiği 0,25°'lik koridor hücreleri |
+| `AirportIndex` | `src/flights.cpp`, `data/airports_tr.json` | Tarifeli seferi olan 50 sivil havalimanı (`tools/make_airports.py`, OurAirports); hava üsleri listede yoktur |
+| `compute_traffic_stats` | `src/traffic_stats.cpp` | Günlük uçuş, saatlere göre yoğunluk (TSİ), havalimanı hareketleri, en yoğun rotalar, koridor yoğunluğu; tek bir saf fonksiyon |
+| `MemoryHistory`, `PgHistory` | `src/history.cpp`, `src/pg_history.cpp` | Geçmiş kaynağı: veritabanısız denemede ve `sema_replay`'de bellek, yayında PostgreSQL |
+| `HistoryApi` | `src/history.cpp` | `/api/status`, `/api/replay`, `/api/stats`; aralık doğrulama, dakikalık önbellek |
+| `LiveServer` (ek) | `src/live_server.cpp` | API isteklerini ayrı bir iş parçacığında yanıtlar; yavaş bir sorgu WebSocket istemcilerini bekletmez |
+| `PromRegistry` | `src/prom_metrics.cpp` | Prometheus metin biçiminde `/metrics` |
+| Web | `web/src/replay.ts`, `web/src/stats.ts` | Geçmiş oynatıcı ve istatistik ekranı |
+
+**Uçuş, kalkış ve iniş.** Bir uçuş, bir izin ilk ve son kabul edilmiş konumu arasıdır; yalnızca havada
+en az iki konumu olanlar sayılır. İlk konum bir havalimanına 12 km'den yakın, havalimanı
+yüksekliğinin en çok 1.500 m üstünde (ya da yerde) ve uçak alçalmıyorsa (dikey hız > −2,5 m/s) o
+havalimanından **kalkış** sayılır; son konum için aynısı tırmanmıyorsa **iniş** sayılır. Böylece
+yaklaşmadayken yakalanan bir uçak "kalkış", kalkıştan hemen sonra kaybolan bir uçak "iniş" olmaz
+(`tests/test_flights.cpp`). ~65 saniyelik güncelleme aralığında uçak kalkıştan sonraki ilk raporda
+genellikle 1.000 m'nin altındadır, bu yüzden eşik bilerek geniştir. Sinyal 10 dakikadan uzun
+kesilirse iz biter ve aynı uçak iki uçuş sayılabilir; bu sayı Aşama 2'deki iz kopma oranıyla aynıdır
+ve README'de gerçek veriyle verilecektir.
+
+**İstatistikler.** Günler ve saatler Türkiye saatidir (UTC+3). *Saatlere göre yoğunluk*, o saat
+diliminde havada olan uçuşların gün başına ortalamasıdır. *Koridorlar*, 0,25°'lik her hücreden geçen
+farklı uçuş sayısıdır; iki rapor arasındaki doğru parçası 5 km'de bir örneklenir, hızlı uçak hücre
+atlamaz. Kapsama boşluğu olan bölgelerde trafik eksik görünür. Sayılar `flights` tablosundan
+hesaplanır ve süren uçuşlar da eklenir. Ham konumlar `SEMA_RETENTION_HOURS` kadar (yayında 168 saat)
+tutulur ve özetlenip silinir; uçuş kayıtları küçüktür (uçuş başına ~300 bayt) ve kalıcıdır, bu yüzden
+istatistikler aylarca geriye gider. `psql` içinde: `SELECT * FROM daily_traffic;`.
+
+**Geçmişi tekrar oynatma.** Harita üstteki **Geçmiş** düğmesiyle istenen başlangıç ve süreyi (30 dk –
+4 sa) `/api/replay`'den alır ve x1–x120 hızla oynatır; zaman çubuğuyla ileri geri gidilir. Canlı
+görünümden farklı olarak her aralığın iki ucu da bilindiği için uçak, son rapordan tahminle değil iki
+gerçek rapor arasında ara değerlemeyle konumlanır. 10 dakikadan uzun sinyal boşluğunda uçak
+gösterilmez. Yanıt kompakt dizilerdir (`[t, enlem, boylam, irtifa, hız, yön, yerde]`); 300 uçaklı bir
+saat sıkıştırılmadan ~1 MB, Caddy'nin gzip/zstd sıkıştırmasıyla bunun küçük bir kısmıdır.
+
+**Kesintisiz çalışma.** `fetch_log`'daki başarılı istekler arasında 15 dakikadan uzun ara olmayan son
+dönem "kesintisiz veri toplama" süresidir; arayüzün İstatistik ve Hakkında panellerinde ve Grafana'da
+gösterilir. Kısa bir yeniden başlatma (yeni sürüm kurmak gibi) bu süreyi bozmaz, çünkü ölçülen şey
+sürecin değil veri akışının sürekliliğidir. Ayrıca sürecin kendi çalışma süresi ayrı bir metriktir.
+
+**Metrikler** (`/metrics`, yalnızca Docker ağı içinden): `sema_opensky_requests_total{status}`,
+`sema_opensky_request_seconds_total`, `sema_opensky_credits_remaining`,
+`sema_opensky_credits_used_total`, `sema_aircraft_kept`, `sema_tracks{state}`,
+`sema_tracker_processing_seconds`, `sema_flights_completed_total`, `sema_quality_rejects_total`,
+`sema_dropped_military_total`, `sema_db_errors_total`, `sema_live_clients`,
+`sema_last_data_time_seconds`, `sema_process_resident_memory_bytes`,
+`sema_collection_streak_seconds`, `sema_start_time_seconds`. Grafana panosu
+(`deploy/grafana/dashboards/sema.json`) bunlardan kota, gecikme, hata, uçak sayısı ve **bellek**
+grafiklerini çizer; iki haftalık çalışmada RSS grafiğinin düz kalması bellek sızıntısı olmadığının
+kanıtı olarak kullanılacaktır (birim testler ayrıca ASan ve TSan ile çalışır).
+
 ## Kurulum
 
 Ubuntu 24.04:
@@ -233,6 +331,19 @@ Web arayüzü için Node.js 22: `cd web && npm ci && npm run build` (ayrıntı `
 vcpkg ile: `VCPKG_ROOT` ayarlıyken `cmake --preset vcpkg && cmake --build --preset vcpkg`.
 
 Sanitizer'lı derlemeler: `asan` (AddressSanitizer + UBSan) ve `tsan` (ThreadSanitizer) önayarları.
+
+### Geçmiş ve istatistik (yerelde)
+
+OpenSky bilgileri olmadan, sentetik kayıtla:
+
+```bash
+./build/release/sema_replay tests/fixtures/replay_synthetic.jsonl --serve 8080 --label "sentetik veri"
+# http://127.0.0.1:8080/  →  üstte "Geçmiş" ve "İstatistik"
+./build/release/sema_replay kayit.jsonl --stats      # aynı istatistikler JSON olarak
+```
+
+`sema_collector --dry-run --serve 8080` geçmişi bellekte tutar (son 24 saat); veritabanıyla çalışınca
+geçmiş ve istatistik PostGIS'ten gelir.
 
 ### Veritabanı ve toplayıcı
 
@@ -310,6 +421,39 @@ yalnızca adres bloğu ve çağrı adı kuralları çalışır.
 OpenSky API istemci bilgileri OpenSky hesabınızın sayfasından alınır. Bilgiler hiçbir zaman depoya
 eklenmez; `.env` dosyası `.gitignore` içindedir.
 
+### Yayın (VPS, alan adı, HTTPS)
+
+Tek bir küçük VPS yeterlidir (2 vCPU, 2–4 GB RAM, 40 GB disk). **Önce erişimi deneyin:** OpenSky bazı
+büyük bulut sağlayıcılarının IP'lerini engelleyebilir; sunucuda
+`curl -sI https://opensky-network.org/api/states/all?lamin=40&lomin=28&lamax=41&lomax=29` 200
+dönmelidir.
+
+1. Alan adınız için bir A (ve varsa AAAA) kaydını sunucunun IP'sine yönlendirin.
+2. Sunucuda Docker ve Compose eklentisini kurun, 80 ve 443 portlarını açın.
+3. Depoyu klonlayın, `.env.example`'ı `.env` olarak kopyalayıp doldurun: `OPENSKY_CLIENT_ID`,
+   `OPENSKY_CLIENT_SECRET`, `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`, `SEMA_DOMAIN`.
+4. Başlatın:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml logs -f collector     # her döngüde bir JSON satırı
+```
+
+Caddy sertifikayı kendisi alır ve yeniler. Site `https://SEMA_DOMAIN/`, sistem panosu
+`https://SEMA_DOMAIN/grafana/` adresindedir (ziyaretçiler giriş yapmadan yalnızca görüntüleyebilir).
+`/metrics` dışarıya kapalıdır. Güncelleme: `git pull && docker compose -f docker-compose.prod.yml up -d --build`.
+
+| Servis | İmaj | Görev |
+|---|---|---|
+| `collector` | bu depo (`Dockerfile`, çok aşamalı, ~140 MB, root olmayan kullanıcı) | Toplayıcı, harita, API, `/metrics` |
+| `db` | `postgis/postgis:16-3.4` | Veritabanı (dışarıya kapalı) |
+| `caddy` | `caddy:2.10` | HTTPS, sıkıştırma, güvenlik başlıkları, WebSocket |
+| `prometheus` | `prom/prometheus` | 15 s'de bir metrik, 60 gün saklama |
+| `grafana` | `grafana/grafana-oss` | Hazır "Semâ — sistem sağlığı" panosu |
+
+CI her değişiklikte imajı derler, sentetik kayıtla duman testi yapar (`/`, `/api/status`,
+`/api/stats`) ve Compose dosyasını doğrular.
+
 ## Ölçümler
 
 Toplayıcı her isteği `fetch_log` tablosuna yazar; `daily_metrics` görünümü günlük kredi kullanımını,
@@ -378,6 +522,25 @@ Dedektörün anlık görüntü başına işlem süresi bu kayıtlarda medyan ~50
 | Elle kontrolde yanlış alarm oranı | henüz ölçülmedi |
 | Tespit edilen olaylar (örnekler) | henüz ölçülmedi |
 
+### Trafik istatistikleri
+
+Gerçek veriyle ölçüm henüz yapılmadı. Aşağıdaki satır **sentetik** kayıttan
+(`sema_replay tests/fixtures/replay_synthetic.jsonl --stats`) gelir ve yalnızca hesaplamanın uçtan uca
+çalıştığını gösterir.
+
+| Ölçüt (sentetik, 90 dk) | Değer |
+|---|---|
+| Uçuş / farklı uçak | 42 / 40 |
+| Kalkışı görülen / inişi görülen | 18 / 26 |
+| En çok hareket | Trabzon (1 kalkış, 4 iniş) |
+
+| Ölçüt (gerçek veri) | Değer |
+|---|---|
+| Günlük uçuş sayısı (Türkiye üzerinde) | henüz ölçülmedi |
+| En yoğun saatler (TSİ) | henüz ölçülmedi |
+| En yoğun havalimanları ve koridorlar | henüz ölçülmedi |
+| Kesintisiz çalışma, bellek (RSS) eğilimi | henüz ölçülmedi |
+
 ## Etik ve hukuki sınırlar
 
 - **Ticari olmayan kullanım.** OpenSky verisi yalnızca ticari olmayan amaçla kullanılır. Sitede reklam
@@ -398,6 +561,11 @@ Dedektörün anlık görüntü başına işlem süresi bu kayıtlarda medyan ~50
   filtresinden sonra çalışır; askeri bölge, üs çevresi veya askeri hareketle ilgili hiçbir kural yoktur.
   Olaylar açık veriden otomatik çıkarılır, yanlış alarm olabilir; arayüz bunu olay ayrıntısında ve
   "Hakkında" panelinde açıkça yazar.
+- **İstatistikler hava üslerini kapsamaz.** Havalimanı listesi OurAirports'tan yalnızca tarifeli
+  seferi olan sivil havalimanlarıyla üretilir; adında ya da etiketinde "Air Base"/"Army" geçen her yer
+  çıkarılır (`tools/make_airports.py`, `LoadsShippedListWithoutAirBases` testi). Ortak kullanımlı
+  meydanlarda da yalnızca sivil hareketler sayılır, çünkü askeri/devlet uçakları istatistikten önce
+  atılmıştır. Geçmiş oynatma ve istatistikler aynı filtrelenmiş veriden gelir.
 - **Kaynak gösterimi.** Veri OpenSky Network'ten gelir ve OpenSky'ın istediği makale aşağıda
   gösterilir. Aynı atıf haritanın köşesinde ve "Hakkında" panelinde de yer alır.
 
@@ -410,7 +578,8 @@ Bu proje [OpenSky Network](https://opensky-network.org) verisini kullanır:
 > In *Proceedings of the 13th IEEE/ACM International Symposium on Information Processing in Sensor
 > Networks (IPSN)*, pages 83–94, April 2014.
 
-Ülke sınırları: [Natural Earth](https://www.naturalearthdata.com) (kamu malı). Harita altlığı:
+Ülke sınırları: [Natural Earth](https://www.naturalearthdata.com) (kamu malı). Havalimanları:
+[OurAirports](https://ourairports.com/data/) (kamu malı). Harita altlığı:
 [OpenFreeMap](https://openfreemap.org), © [OpenMapTiles](https://openmaptiles.org),
 © [OpenStreetMap katkıcıları](https://www.openstreetmap.org/copyright).
 

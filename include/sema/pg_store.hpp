@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "sema/anomaly.hpp"
+#include "sema/flights.hpp"
 #include "sema/state_vector.hpp"
 
 namespace sema {
@@ -44,6 +45,9 @@ public:
     // Inserts or updates anomaly events by key (opened, updated and closed
     // events can all be passed; the latest state wins).
     void upsert_events(const std::vector<AnomalyEvent>& events);
+    // Stores finished flights (duplicates by icao24 + first_seen are ignored).
+    // Returns the number of rows written.
+    std::size_t insert_flights(const std::vector<FlightRecord>& flights);
     // Summarise and delete raw rows older than `keep`. Returns rows deleted.
     std::int64_t rollup_and_prune(std::chrono::hours keep);
 
