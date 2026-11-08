@@ -240,7 +240,8 @@ nlohmann::json HistoryApi::status_json() {
                      {"max_replay_s", cfg_.max_replay_s},
                      {"max_stats_s", cfg_.max_stats_s},
                      {"utc_offset_s", cfg_.utc_offset_s},
-                     {"airports", airports_->size()}};
+                     {"airports", airports_->size()},
+                     {"site", cfg_.site}};
     if (const auto r = source_->available()) {
         j["history"] = {{"from", r->from}, {"to", r->to}};
     } else {
@@ -276,7 +277,8 @@ ApiResponse HistoryApi::replay(const ApiRequest& req) {
     if (*to - *from > cfg_.max_replay_s + 1.0) {
         throw std::invalid_argument("range longer than " + std::to_string(static_cast<long>(cfg_.max_replay_s)) + " s");
     }
-    const auto j = replay_to_json(source_->replay(*from, *to), *from, *to);
+    auto j = replay_to_json(source_->replay(*from, *to), *from, *to);
+    if (cfg_.mask_identifiers) cfg_.mask_identifiers(j);
     // A range that ended a while ago no longer changes.
     const bool settled = *to < now_() - 600.0 || cfg_.mode == "replay";
     return json_response(j, 200, settled ? 3600 : 0);

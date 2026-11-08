@@ -2,6 +2,8 @@
 # (Let's Encrypt / ZeroSSL) for SEMA_DOMAIN by itself.
 
 {$SEMA_DOMAIN} {
+	# No `log` directive on purpose: Caddy writes no access log, so visitors'
+	# IP addresses are not stored (see web/public/gizlilik.html).
 	encode zstd gzip
 
 	header {

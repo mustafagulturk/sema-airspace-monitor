@@ -48,7 +48,8 @@ endif()
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/sql/001_init.sql SEMA_SQL_001_INIT)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/sql/002_events.sql SEMA_SQL_002_EVENTS)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/sql/003_history.sql SEMA_SQL_003_HISTORY)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS sql/001_init.sql sql/002_events.sql sql/003_history.sql)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/sql/004_privacy.sql SEMA_SQL_004_PRIVACY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS sql/001_init.sql sql/002_events.sql sql/003_history.sql sql/004_privacy.sql)
 configure_file(src/migrations.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/generated/sema/migrations.hpp @ONLY)
 
 # --- Core library ------------------------------------------------------------
@@ -60,6 +61,7 @@ add_library(sema_core
   src/curl_transport.cpp
   src/opensky_client.cpp
   src/pipeline.cpp
+  src/privacy.cpp
   src/pg_store.cpp
   src/clock.cpp
   src/kalman.cpp

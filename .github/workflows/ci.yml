@@ -103,6 +103,6 @@ jobs:
           docker rm -f sema-smoke
       - name: Validate docker-compose.prod.yml
         run: |
-          printf 'OPENSKY_CLIENT_ID=x\nOPENSKY_CLIENT_SECRET=x\nPOSTGRES_PASSWORD=x\nGRAFANA_ADMIN_PASSWORD=x\nSEMA_DOMAIN=example.org\n' > ci.env
+          printf 'OPENSKY_CLIENT_ID=x\nOPENSKY_CLIENT_SECRET=x\nPOSTGRES_PASSWORD=x\nGRAFANA_ADMIN_PASSWORD=x\nSEMA_DOMAIN=example.org\nSEMA_OPENSKY_PERMISSION=ci\nSEMA_OPERATOR_NAME=ci\nSEMA_CONTACT_EMAIL=ci@example.org\n' > ci.env
           docker compose --env-file ci.env -f docker-compose.prod.yml config -q
           python3 -c "import json; json.load(open('deploy/grafana/dashboards/sema.json'))"

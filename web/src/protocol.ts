@@ -8,7 +8,11 @@ export interface HelloMessage {
   source: "live" | "replay";
   label: string;
   attribution: string;
+  /** What the server shows about each aircraft (SEMA_IDENTIFIERS). */
+  identifiers: IdentifierMode;
 }
+
+export type IdentifierMode = "hidden" | "airline" | "full";
 
 /** [lat_min, lon_min, count] */
 export type CoverageCell = [number, number, number];
@@ -136,6 +140,8 @@ export function parseMessage(text: string): ParseResult {
           source: raw.source,
           label: typeof raw.label === "string" ? raw.label : "",
           attribution: typeof raw.attribution === "string" ? raw.attribution : "",
+          identifiers:
+            raw.identifiers === "full" || raw.identifiers === "airline" ? raw.identifiers : "hidden",
         },
       };
     case "coverage":

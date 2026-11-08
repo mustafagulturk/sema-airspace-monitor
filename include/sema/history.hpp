@@ -129,6 +129,11 @@ struct HistoryApiConfig {
     double default_stats_s = 7 * 86400.0;
     int utc_offset_s = 3 * 3600;
     double stats_cache_s = 60.0;
+    // Applied to /api/replay replies before they leave the server (IdentityMasker::apply).
+    std::function<void(nlohmann::json&)> mask_identifiers;
+    // Shown on the privacy page (web/public/gizlilik.html) as "site" in
+    // /api/status: operator, contact, identifier mode, retention periods.
+    nlohmann::json site = nlohmann::json::object();
 };
 
 // JSON API for the web map:

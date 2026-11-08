@@ -118,6 +118,8 @@ private:
 
 // {"type":"hello", "protocol", "source", "label", "attribution"}: the first
 // message every client gets. `source` is "live" or "replay".
-nlohmann::json live_hello_json(const std::string& source, const std::string& label);
+// `identifiers` is the IdentifierMode the server publishes with ("hidden", "airline" or "full").
+nlohmann::json live_hello_json(const std::string& source, const std::string& label,
+                               const std::string& identifiers = "full");
 
 }  // namespace sema

@@ -60,6 +60,7 @@ struct PgStore::Impl {
                      "string_to_array($18, ',')::integer[]) "
                      "ON CONFLICT (icao24, first_seen) DO NOTHING");
         conn.prepare("rollup_and_prune", "SELECT sema_rollup_and_prune(make_interval(hours => $1))");
+        conn.prepare("anonymize_identities", "SELECT sema_anonymize_identities(make_interval(days => $1))");
         prepared = true;
     }
 };
@@ -74,6 +75,7 @@ void PgStore::migrate() {
     tx.exec(std::string(migrations::k001Init));
     tx.exec(std::string(migrations::k002Events));
     tx.exec(std::string(migrations::k003History));
+    tx.exec(std::string(migrations::k004Privacy));
     tx.commit();
     impl_->prepare();
 }
@@ -158,6 +160,14 @@ std::int64_t PgStore::rollup_and_prune(std::chrono::hours keep) {
     impl_->prepare();
     pqxx::work tx(impl_->conn);
     auto r = tx.exec_prepared1("rollup_and_prune", static_cast<int>(keep.count()));
+    tx.commit();
+    return r[0].as<std::int64_t>();
+}
+
+std::int64_t PgStore::anonymize_identities(std::chrono::days keep) {
+    impl_->prepare();
+    pqxx::work tx(impl_->conn);
+    auto r = tx.exec_prepared1("anonymize_identities", static_cast<int>(keep.count()));
     tx.commit();
     return r[0].as<std::int64_t>();
 }

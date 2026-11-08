@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Semâ — Gizlilik, künye ve kullanım koşulları</title>
+    <meta name="robots" content="noindex" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath fill='%231864ab' d='M50 8c4 2 5 9 5 20v12l36 18v7l-36-9-1 22 12 9v6l-16-4-16 4v-6l12-9-1-22-36 9v-7l36-18V28c0-11 1-18 5-20z'/%3E%3C/svg%3E" />
+    <style>
+      :root { --bg: #f8f9fa; --fg: #212529; --muted: #5c636a; --line: #dee2e6; --link: #1864ab; --card: #fff; }
+      @media (prefers-color-scheme: dark) {
+        :root { --bg: #141517; --fg: #e9ecef; --muted: #adb5bd; --line: #373a40; --link: #74c0fc; --card: #1a1b1e; }
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+      main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
+      h1 { font-size: 1.6rem; margin: 0 0 4px; }
+      h2 { font-size: 1.15rem; margin: 32px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+      p, li { max-width: 68ch; }
+      a { color: var(--link); }
+      .muted { color: var(--muted); }
+      .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+      dt { color: var(--muted); }
+      dd { margin: 0; overflow-wrap: anywhere; }
+      .warn { border-left: 4px solid #e67700; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p><a href="/">← Haritaya dön</a></p>
+      <h1>Gizlilik, künye ve kullanım koşulları</h1>
+      <p class="muted">Bu sayfa Semâ'nın hangi veriyi nasıl işlediğini, kime ulaşabileceğinizi ve sitenin neyi amaçlamadığını anlatır.</p>
+
+      <h2 id="kunye">Künye ve iletişim</h2>
+      <div class="card">
+        <dl>
+          <dt>Site</dt><dd>Semâ — Türkiye hava sahası izleme (ticari olmayan, kişisel bir proje)</dd>
+          <dt>İşleten</dt><dd id="operator">—</dd>
+          <dt>İletişim</dt><dd id="contact">—</dd>
+          <dt>Kaynak kod</dt><dd><a href="https://github.com/mustafagulturk/sema-airspace-monitor" rel="noopener">github.com/mustafagulturk/sema-airspace-monitor</a> (MIT lisansı)</dd>
+        </dl>
+      </div>
+
+      <h2 id="sorumluluk">Sorumluluk reddi</h2>
+      <div class="card warn">
+        <p><b>Semâ seyrüsefer, uçuş emniyeti, hava trafik kontrolü veya herhangi bir operasyonel amaçla kullanılamaz.</b></p>
+        <p>Konumlar gönüllülerin işlettiği alıcılardan gelen açık ADS-B verisinden tahmin edilir. Veri eksik, gecikmeli veya yanlış olabilir; haritadaki konum uçağın gerçek konumundan farklı olabilir.</p>
+        <p>“Olaylar” listesi (acil durum kodu, ani irtifa kaybı, bekleme, rota sapması, sinyal kaybı) yazılım tarafından otomatik çıkarılır. Yanlış alarm olabilir; resmî bir bildirim değildir ve bir uçakta gerçekten sorun olduğu anlamına gelmez. Uçuşunuz hakkında bilgi için havayolunuza veya havalimanına başvurun.</p>
+        <p>Semâ; OpenSky Network, DHMİ, SHGM, herhangi bir havayolu ya da kamu kurumu ile bağlantılı değildir ve onlar adına konuşmaz. Site olduğu gibi sunulur; doğruluk, süreklilik veya belirli bir amaca uygunluk garantisi verilmez.</p>
+      </div>
+
+      <h2 id="askeri">Askerî ve devlet hava araçları</h2>
+      <p>Askerî ve devlet hava araçları tanındıkları anda, hiçbir yere kaydedilmeden ve gösterilmeden atılır. Sitede üs, askerî bölge veya askerî hareketlerle ilgili hiçbir katman ya da özellik yoktur.</p>
+
+      <h2 id="kisisel-veri">Uçak verisi ve kişisel veriler (KVKK aydınlatma metni)</h2>
+      <p>Bu bölüm 6698 sayılı Kişisel Verilerin Korunması Kanunu'nun 10. maddesi kapsamında bilgilendirme amacı taşır.</p>
+      <ul>
+        <li><b>Veri sorumlusu:</b> yukarıda “İşleten” olarak yazan kişi.</li>
+        <li><b>İşlenen veri:</b> sivil uçakların herkese açık yayınladığı ADS-B sinyallerinden elde edilen konum, irtifa, hız, yön, transponder adresi (ICAO24), çağrı kodu ve tescil ülkesi. Veri OpenSky Network'ten alınır. Uçakların çoğu havayollarına aittir; ancak özel bir uçağın adresi veya tescili dolaylı olarak bir kişiyi işaret edebilir, bu yüzden bu bilgiler kişisel veri olabilir.</li>
+        <li><b>Amaç ve hukuki sebep:</b> Türkiye üzerindeki sivil hava trafiğinin ticari olmayan, eğitim ve araştırma amaçlı olarak görselleştirilmesi ve istatistiklerinin çıkarılması; KVKK m. 5/2-f (meşru menfaat). Veri satılmaz, reklam veya profil çıkarma için kullanılmaz.</li>
+        <li><b>Sitede gösterilen:</b> <span id="identifiers">Uçak kimlikleri gizlidir: ICAO24 adresi yerine her gün değişen anonim bir kimlik kullanılır, çağrı kodu gösterilmez.</span></li>
+        <li><b>Saklama süresi:</b> ham konumlar <span id="retention">birkaç gün</span> sonra silinir; uçuş kayıtları, olaylar ve saatlik özetlerdeki ICAO24 ve çağrı kodu <span id="identity-days">30 gün</span> sonra geri döndürülemez biçimde anonimleştirilir. Bundan sonra yalnızca kimliksiz istatistikler (günlük uçuş sayısı, havalimanı ve koridor yoğunluğu) kalır.</li>
+        <li><b>Aktarım:</b> veri üçüncü kişilere aktarılmaz, satılmaz; ham OpenSky verisi yeniden dağıtılmaz.</li>
+      </ul>
+
+      <h2 id="kaldirma">Uçağınızı kaldırma ve haklarınız</h2>
+      <p>Bir uçağın sahibi veya işleticisiyseniz ve uçağınızın Semâ'da gösterilmesini istemiyorsanız, uçağın tescilini ya da ICAO24 adresini yukarıdaki iletişim adresine yazmanız yeterlidir. Uçak bir “gösterme” listesine eklenir; o andan sonra hiç kaydedilmez ve gösterilmez, mevcut kayıtları silinir. Talebiniz için uçağın tescili dışında bir bilgi istenmez.</p>
+      <p>KVKK m. 11 kapsamındaki haklarınız (bilgi talep etme, düzeltme, silme, itiraz) için de aynı adrese başvurabilirsiniz. Başvurular en geç 30 gün içinde ücretsiz yanıtlanır.</p>
+
+      <h2 id="ziyaretci">Ziyaretçi verileri</h2>
+      <ul>
+        <li>Semâ çerez, reklam, analitik veya izleme aracı kullanmaz; hesap ya da giriş yoktur.</li>
+        <li>Sunucu ziyaretçilerin IP adreslerini veya hangi sayfaya baktıklarını kaydetmez (erişim kaydı kapalıdır).</li>
+        <li>Harita altlığı <a href="https://openfreemap.org" rel="noopener">OpenFreeMap</a> sunucularından yüklenir; tarayıcınız bu sunuculara bağlandığında IP adresiniz onlara ulaşır.</li>
+        <li><code>/grafana/</code> adresindeki sistem sağlığı paneli Grafana yazılımıyla sunulur ve oturum için teknik bir çerez kullanabilir.</li>
+      </ul>
+
+      <h2 id="kaynaklar">Veri kaynakları ve atıflar</h2>
+      <ul>
+        <li><b>Uçak verisi:</b> <a href="https://opensky-network.org" rel="noopener">The OpenSky Network</a>. Matthias Schäfer, Martin Strohmeier, Vincent Lenders, Ivan Martinovic, Matthias Wilhelm, “Bringing up OpenSky: A large-scale ADS-B sensor network for research”, <i>ACM/IEEE IPSN</i>, Nisan 2014.</li>
+        <li><b>Harita:</b> <a href="https://openfreemap.org" rel="noopener">OpenFreeMap</a>, <a href="https://openmaptiles.org" rel="noopener">© OpenMapTiles</a>, veri <a href="https://www.openstreetmap.org/copyright" rel="noopener">© OpenStreetMap katkıcıları</a> (ODbL).</li>
+        <li><b>Sınır:</b> <a href="https://www.naturalearthdata.com" rel="noopener">Natural Earth</a> (kamu malı) verisinden türetilmiştir; gösterim amaçlıdır, resmî sınır değildir.</li>
+        <li><b>Havalimanları:</b> <a href="https://ourairports.com/data/" rel="noopener">OurAirports</a> (kamu malı).</li>
+        <li><b>Yazılım:</b> <a href="https://maplibre.org" rel="noopener">MapLibre GL JS</a> (BSD-3) ve diğer açık kaynak kütüphaneler; lisans metinleri <a href="/third-party-licenses.txt">third-party-licenses.txt</a> ve depodaki <code>THIRD_PARTY_NOTICES.md</code> dosyasındadır.</li>
+      </ul>
+      <p class="muted">Son güncelleme: 8 Kasım 2026</p>
+    </main>
+    <script>
+      // Fill operator, contact and retention from the running server's settings.
+      fetch("/api/status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((s) => {
+          const site = (s && s.site) || {};
+          const set = (id, text) => {
+            if (text) document.getElementById(id).textContent = text;
+          };
+          set("operator", site.operator);
+          if (site.contact) {
+            const a = document.createElement("a");
+            a.href = "mailto:" + site.contact;
+            a.textContent = site.contact;
+            document.getElementById("contact").replaceChildren(a);
+          }
+          if (site.retention_hours) {
+            const h = Number(site.retention_hours);
+            set("retention", h % 24 === 0 ? h / 24 + " gün" : h + " saat");
+          }
+          if (site.identity_days) set("identity-days", site.identity_days + " gün");
+          const notes = {
+            airline:
+              "ICAO24 adresi yerine her gün değişen anonim bir kimlik kullanılır; yalnızca havayolu sefer kodları (ör. THY7) gösterilir, özel uçakların tescili gösterilmez.",
+            full: "ICAO24 adresi ve çağrı kodu, OpenSky Network'ün yazılı izni kapsamında gösterilir.",
+          };
+          set("identifiers", notes[site.identifiers]);
+        })
+        .catch(() => {});
+    </script>
+  </body>
+</html>

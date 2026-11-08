@@ -187,11 +187,12 @@ json LiveState::snapshot_json(const LiveClock& clock) const {
             {"aircraft", std::move(aircraft)}};
 }
 
-json live_hello_json(const std::string& source, const std::string& label) {
+json live_hello_json(const std::string& source, const std::string& label, const std::string& identifiers) {
     return {{"type", "hello"},
             {"protocol", kLiveProtocolVersion},
             {"source", source},
             {"label", label},
+            {"identifiers", identifiers},
             {"attribution",
              "OpenSky Network (opensky-network.org); M. Schäfer, M. Strohmeier, V. Lenders, I. Martinovic, "
              "M. Wilhelm, \"Bringing Up OpenSky: A Large-scale ADS-B Sensor Network for Research\", IPSN 2014"}};

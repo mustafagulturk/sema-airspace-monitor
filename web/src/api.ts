@@ -16,6 +16,8 @@ export interface StatusResponse {
   max_stats_s: number;
   utc_offset_s: number;
   airports: number;
+  /** operator, contact, identifier mode and retention, for the privacy page */
+  site?: Record<string, unknown>;
   /** replayable window, null when there is no data yet */
   history: TimeRange | null;
   /** current unbroken stretch of data collection */

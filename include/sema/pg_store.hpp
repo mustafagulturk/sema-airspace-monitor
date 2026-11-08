@@ -50,6 +50,10 @@ public:
     std::size_t insert_flights(const std::vector<FlightRecord>& flights);
     // Summarise and delete raw rows older than `keep`. Returns rows deleted.
     std::int64_t rollup_and_prune(std::chrono::hours keep);
+    // Replaces ICAO24 with a pseudonym and drops callsigns/tracks in flights,
+    // positions_hourly and anomaly_events for whole local days older than
+    // `keep` (sql/004_privacy.sql). Returns the number of rows changed.
+    std::int64_t anonymize_identities(std::chrono::days keep);
 
 private:
     struct Impl;

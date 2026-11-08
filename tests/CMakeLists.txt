@@ -21,6 +21,7 @@ add_executable(sema_unit_tests
   test_traffic_stats.cpp
   test_history.cpp
   test_report.cpp
+  test_privacy.cpp
 )
 target_link_libraries(sema_unit_tests PRIVATE sema_core sema_live Boost::headers GTest::gtest_main)
 target_compile_definitions(sema_unit_tests PRIVATE

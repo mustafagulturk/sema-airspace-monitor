@@ -6,6 +6,7 @@ import {
   formatAgo,
   formatAltitude,
   formatHeading,
+  formatIcao,
   formatSigma,
   formatSpeed,
   formatVerticalRate,
@@ -105,5 +106,10 @@ describe("misc", () => {
   it("display name falls back to ICAO24", () => {
     expect(displayName("THY1  ", "4b8001")).toBe("THY1");
     expect(displayName("  ", "4b8001")).toBe("4B8001");
+  });
+  it("anonymous aircraft get a short tag and a hidden ICAO24", () => {
+    expect(displayName("", "~1a2b3c4d")).toBe("Uçak 3C4D");
+    expect(formatIcao("~1a2b3c4d")).toBe("Gizli");
+    expect(formatIcao("4b8001")).toBe("4B8001");
   });
 });
