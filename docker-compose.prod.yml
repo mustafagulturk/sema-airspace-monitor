@@ -1,0 +1,110 @@
+# Semâ on a single VPS: database, collector (with the web map), HTTPS reverse
+# proxy, Prometheus and Grafana. Only Caddy is reachable from the internet.
+#
+#   cp .env.example .env     # fill in OpenSky credentials, passwords, SEMA_DOMAIN
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Caddy gets a Let's Encrypt certificate for SEMA_DOMAIN by itself once the
+# domain's DNS A/AAAA record points at the server and ports 80/443 are open.
+name: sema
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sema}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-sema}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    shm_size: 256mb
+
+  collector:
+    build: .
+    image: sema:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID:?set OPENSKY_CLIENT_ID in .env}
+      OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET:?set OPENSKY_CLIENT_SECRET in .env}
+      SEMA_DATABASE_URL: postgresql://${POSTGRES_USER:-sema}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sema}
+      SEMA_MIN_INTERVAL_S: ${SEMA_MIN_INTERVAL_S:-60}
+      SEMA_DAILY_CREDITS: ${SEMA_DAILY_CREDITS:-4000}
+      # Raw positions (replayable in "Geçmiş") are kept this long; flights forever.
+      SEMA_RETENTION_HOURS: ${SEMA_RETENTION_HOURS:-168}
+      SEMA_MAX_REPLAY_HOURS: ${SEMA_MAX_REPLAY_HOURS:-4}
+      # Optional OpenSky aircraft database CSV for the operator rule, placed in
+      # ./extra on the server, e.g. SEMA_AIRCRAFT_DB=/app/extra/aircraft-database.csv
+      SEMA_AIRCRAFT_DB: ${SEMA_AIRCRAFT_DB:-}
+    volumes:
+      - ./extra:/app/extra:ro
+    expose:
+      - "8080"
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    depends_on: [collector, grafana]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SEMA_DOMAIN: ${SEMA_DOMAIN:?set SEMA_DOMAIN in .env (e.g. sema.example.com)}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=60d
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    expose:
+      - "9090"
+
+  grafana:
+    image: grafana/grafana-oss:12.1.1
+    restart: unless-stopped
+    depends_on: [prometheus]
+    environment:
+      GF_SERVER_ROOT_URL: https://${SEMA_DOMAIN}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      # Visitors may look at the system-health dashboard without logging in.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/sema.json
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    expose:
+      - "3000"
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:
+  prometheus-data:
+  grafana-data:

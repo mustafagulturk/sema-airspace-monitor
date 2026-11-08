@@ -1,0 +1,28 @@
+# HTTPS reverse proxy for Semâ. Caddy obtains and renews the certificate
+# (Let's Encrypt / ZeroSSL) for SEMA_DOMAIN by itself.
+
+{$SEMA_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "geolocation=(), camera=(), microphone=()"
+		-Server
+	}
+
+	# Prometheus scrapes the collector inside the Docker network; not public.
+	handle /metrics {
+		respond 404
+	}
+
+	handle /grafana* {
+		reverse_proxy grafana:3000
+	}
+
+	# Web map, WebSocket (/ws) and JSON API (/api/*).
+	handle {
+		reverse_proxy collector:8080
+	}
+}
