@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include "../src/pqxx_compat.hpp"
 
+#include "sema/pg_history.hpp"
 #include "sema/pg_store.hpp"
 
 namespace {
@@ -45,7 +46,7 @@ protected:
         store_->migrate();
         conn_ = std::make_unique<pqxx::connection>(db_url());
         pqxx::work tx(*conn_);
-        tx.exec("TRUNCATE positions, positions_hourly, fetch_log, boundaries, anomaly_events");
+        tx.exec("TRUNCATE positions, positions_hourly, fetch_log, boundaries, anomaly_events, flights");
         tx.commit();
     }
 
@@ -64,7 +65,7 @@ protected:
 TEST_F(PgStoreTest, MigrateIsIdempotent) {
     EXPECT_NO_THROW(store_->migrate());
     EXPECT_NO_THROW(store_->migrate());
-    EXPECT_EQ(scalar<int>("SELECT max(version) FROM schema_version"), 2);
+    EXPECT_EQ(scalar<int>("SELECT max(version) FROM schema_version"), 3);
 }
 
 TEST_F(PgStoreTest, InsertAndReadBack) {
@@ -242,3 +243,111 @@ TEST_F(PgStoreTest, RollupAndPrune) {
 }
 
 }  // namespace
+
+TEST_F(PgStoreTest, FlightsRoundTripThroughPgHistory) {
+    sema::FlightRecord f;
+    f.track_id = 42;
+    f.icao24 = "4b8001";
+    f.callsign = "THY7";
+    f.origin_country = "Turkey";
+    f.first_seen = 1'700'000'000;
+    f.last_seen = 1'700'003'600;
+    f.first_pos = {41.27, 28.73};
+    f.last_pos = {40.13, 32.99};
+    f.max_altitude_m = 11000.0;
+    f.fixes = 55;
+    f.airborne = true;
+    f.departure = "LTFM";
+    f.arrival = "LTAC";
+    f.end_reason = "landed";
+    f.cells = {1'000'001, 1'000'002};
+    sema::FlightRecord g = f;
+    g.icao24 = "4b8002";
+    g.first_seen = 1'700'090'000;
+    g.departure.clear();
+    g.cells.clear();
+    EXPECT_EQ(store_->insert_flights({f, g}), 2U);
+    EXPECT_EQ(store_->insert_flights({f}), 0U);  // duplicate (icao24, first_seen)
+    EXPECT_EQ(scalar<int>("SELECT count(*) FROM daily_traffic"), 2);
+    EXPECT_EQ(scalar<int>("SELECT sum(departures) FROM daily_traffic"), 1);
+
+    sema::PgHistory h(db_url());
+    const auto rows = h.flights(1'699'999'000, 1'700'100'000);
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[0].icao24, "4b8001");
+    EXPECT_EQ(rows[0].callsign, "THY7");
+    EXPECT_EQ(rows[0].departure, "LTFM");
+    EXPECT_EQ(rows[0].arrival, "LTAC");
+    EXPECT_EQ(rows[0].end_reason, "landed");
+    EXPECT_EQ(rows[0].cells, f.cells);
+    EXPECT_NEAR(rows[0].first_pos.lat, 41.27, 1e-9);
+    EXPECT_NEAR(rows[0].last_pos.lon, 32.99, 1e-9);
+    EXPECT_DOUBLE_EQ(rows[0].first_seen, f.first_seen);
+    EXPECT_FALSE(rows[0].min_altitude_m.has_value());
+    EXPECT_NEAR(rows[0].max_altitude_m.value_or(0), 11000.0, 1e-3);
+    EXPECT_EQ(rows[1].departure, "");
+    EXPECT_TRUE(rows[1].cells.empty());
+    EXPECT_EQ(h.flights(1'700'000'001, 1'700'090'000).size(), 0U);
+}
+
+TEST_F(PgStoreTest, PgHistoryReplaysPositionsWithoutRepeats) {
+    sema::PgHistory h(db_url());
+    EXPECT_FALSE(h.available());
+    const auto fetched = std::chrono::system_clock::time_point(std::chrono::seconds(1'700'000'000));
+    auto a = make_state("4b8001", 39.0, 32.0);
+    store_->insert_positions(fetched, {a, make_state("4b8002", 40.0, 30.0)});
+    // OpenSky repeats a's report in the next snapshot, then a moves on.
+    store_->insert_positions(fetched + 10s, {a});
+    a.time_position = 1'700'000'065;
+    a.latitude = 39.1;
+    a.baro_altitude.reset();
+    store_->insert_positions(fetched + 65s, {a});
+
+    const auto range = h.available();
+    ASSERT_TRUE(range);
+    EXPECT_DOUBLE_EQ(range->from, 1'700'000'000.0);
+    EXPECT_DOUBLE_EQ(range->to, 1'700'000'065.0);
+
+    auto r = h.replay(1'699'999'000, 1'700'001'000);
+    ASSERT_EQ(r.size(), 2U);
+    EXPECT_EQ(r[0].icao24, "4b8001");
+    EXPECT_EQ(r[0].callsign, "THY1AB");
+    ASSERT_EQ(r[0].fixes.size(), 2U);
+    EXPECT_DOUBLE_EQ(r[0].fixes[0].t, 1'700'000'000.0);
+    EXPECT_NEAR(r[0].fixes[1].lat, 39.1, 1e-9);
+    // Falls back to geometric altitude when there is no barometric one.
+    EXPECT_NEAR(r[0].fixes[1].alt_m.value_or(0), 11010.0, 0.01);
+    EXPECT_NEAR(r[0].fixes[0].speed_ms.value_or(0), 231.5, 0.01);
+
+    r = h.replay(1'700'000'030, 1'700'001'000);
+    ASSERT_EQ(r.size(), 1U);
+    EXPECT_EQ(r[0].fixes.size(), 1U);
+}
+
+TEST_F(PgStoreTest, CollectionStreakFromFetchLog) {
+    sema::PgHistory h(db_url());
+    EXPECT_FALSE(h.collection_streak());
+    const auto now = std::chrono::system_clock::now();
+    sema::FetchLogEntry e;
+    e.http_status = 200;
+    e.attempts = 1;
+    e.credits_cost = 3;
+    // An old run, a 40 minute gap, then a run every minute up to now.
+    for (int i = 0; i < 5; ++i) {
+        e.started_at = now - 3h + std::chrono::minutes(i);
+        store_->log_fetch(e);
+    }
+    for (int i = 0; i <= 100; ++i) {
+        e.started_at = now - 2h + std::chrono::minutes(i + 20) - 1min;
+        store_->log_fetch(e);
+    }
+    const auto s = h.collection_streak();
+    ASSERT_TRUE(s);
+    EXPECT_NEAR(s->to - s->from, 100 * 60.0, 1.0);
+
+    // Nothing for 20 minutes: no current streak.
+    pqxx::work tx(*conn_);
+    tx.exec("UPDATE fetch_log SET started_at = started_at - interval '20 minutes'");
+    tx.commit();
+    EXPECT_FALSE(h.collection_streak());
+}

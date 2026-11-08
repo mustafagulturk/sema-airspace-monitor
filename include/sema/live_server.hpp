@@ -7,6 +7,8 @@
 #include <memory>
 #include <string>
 
+#include "sema/api.hpp"
+
 namespace sema {
 
 struct LiveServerConfig {
@@ -20,6 +22,11 @@ struct LiveServerConfig {
     // A client that falls this many messages behind is disconnected rather
     // than letting its queue grow without bound.
     std::size_t max_queued_messages = 8;
+    // Optional handler for GET /api/* and /metrics. It runs on a separate
+    // worker thread (one at a time), so a slow database query never stalls the
+    // WebSocket clients. Requests beyond `max_api_in_flight` get 503.
+    ApiHandler api;
+    std::size_t max_api_in_flight = 16;
 };
 
 // HTTP + WebSocket server for the live map (Boost.Beast, one I/O thread).
@@ -29,6 +36,7 @@ struct LiveServerConfig {
 //                  then every new message as it is published. Clients only
 //                  listen; anything they send is ignored.
 //   GET /healthz   {"status":"ok","clients":N}
+//   GET /api/*, /metrics   answered by `api`, if set
 //   GET /<path>    static files from `web_root` and `files`
 //
 // publish() may be called from any thread.
