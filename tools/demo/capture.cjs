@@ -3,7 +3,7 @@
 // must not show real aircraft identifiers (see README, Etik ve hukuki sınırlar).
 //
 //   ./build/release/sema_replay tests/fixtures/anomaly_synthetic.jsonl --loss-min-coverage 3 \
-//       --serve 8080 --speed 30 --label "sentetik veri"
+//       --serve 8080 --speed 30 --label "sentetik veri" --identifiers full   # synthetic ids only
 //   node tools/demo/capture.cjs [http://127.0.0.1:8080/] [docs/img]
 //
 // Needs Playwright (`npm i -D playwright && npx playwright install chromium`)

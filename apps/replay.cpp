@@ -339,6 +339,7 @@ int run(const Options& o) {
         hc.label = o.label;
         hc.max_replay_s = 24 * 3600.0;  // local use: allow long ranges
         hc.mask_identifiers = [&masker](nlohmann::json& j) { masker.apply(j); };
+        hc.site = {{"identifiers", identifiers}};
         auto api = std::make_shared<sema::HistoryApi>(preload_history(o, cfg, in_area, *airports), airports, hc);
         sc.api = [api](const sema::ApiRequest& req) { return api->handle(req); };
         server = std::make_unique<sema::LiveServer>(sc);
