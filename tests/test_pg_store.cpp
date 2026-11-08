@@ -65,7 +65,7 @@ protected:
 TEST_F(PgStoreTest, MigrateIsIdempotent) {
     EXPECT_NO_THROW(store_->migrate());
     EXPECT_NO_THROW(store_->migrate());
-    EXPECT_EQ(scalar<int>("SELECT max(version) FROM schema_version"), 3);
+    EXPECT_EQ(scalar<int>("SELECT max(version) FROM schema_version"), 4);
 }
 
 TEST_F(PgStoreTest, InsertAndReadBack) {
@@ -350,4 +350,56 @@ TEST_F(PgStoreTest, CollectionStreakFromFetchLog) {
     tx.exec("UPDATE fetch_log SET started_at = started_at - interval '20 minutes'");
     tx.commit();
     EXPECT_FALSE(h.collection_streak());
+}
+
+TEST_F(PgStoreTest, AnonymizeIdentitiesAfterRetention) {
+    {
+        pqxx::work tx(*conn_);
+        // Two flights of one aircraft and one of another, 40 days ago (same local
+        // day), and one recent flight that must keep its identity.
+        const char* flight =
+            "INSERT INTO flights (track_id, icao24, callsign, first_seen, last_seen, first_pos, last_pos, fixes, "
+            "airborne, end_reason) VALUES ($1, $2, $3, $4::timestamptz, $4::timestamptz + interval '1 hour', "
+            "ST_SetSRID(ST_MakePoint(29, 41), 4326)::geography, ST_SetSRID(ST_MakePoint(33, 40), 4326)::geography, "
+            "10, true, 'lost')";
+        const auto old_day = "date_trunc('day', now() - interval '40 days') + interval '12 hours'";
+        tx.exec_params(flight, 1, "4b8001", "TCABC", tx.query_value<std::string>(std::string("SELECT ") + old_day));
+        tx.exec_params(flight, 2, "4b8001", "TCABC",
+                       tx.query_value<std::string>(std::string("SELECT ") + old_day + " + interval '3 hours'"));
+        tx.exec_params(flight, 3, "4b8002", "THY7", tx.query_value<std::string>(std::string("SELECT ") + old_day));
+        tx.exec_params(flight, 4, "4b8003", "THY8", tx.query_value<std::string>("SELECT now() - interval '1 day'"));
+        tx.exec(std::string("INSERT INTO positions_hourly (hour, icao24, callsign, samples, first_seen, last_seen, track) "
+                            "VALUES (date_trunc('hour', ") + old_day + "), '4b8001', 'TCABC', 2, now(), now(), "
+                            "ST_GeomFromText('LINESTRING(29 41, 30 41)', 4326))");
+        tx.exec(std::string("INSERT INTO anomaly_events (key, kind, icao24, callsign, start_time, detect_time, end_time, "
+                            "active, geom, summary) VALUES ('holding:4b8001:1', 'holding', '4b8001', 'TCABC', ") +
+                old_day + ", " + old_day + ", " + old_day +
+                ", false, ST_SetSRID(ST_MakePoint(29, 41), 4326)::geography, 'x')");
+        tx.commit();
+    }
+    const auto daily_aircraft_before = scalar<int>("SELECT sum(aircraft) FROM daily_traffic");
+
+    EXPECT_EQ(store_->anonymize_identities(std::chrono::days(30)), 5);
+    EXPECT_EQ(store_->anonymize_identities(std::chrono::days(30)), 0);  // already done
+
+    EXPECT_EQ(scalar<int>("SELECT count(*) FROM flights WHERE icao24 LIKE '4b800%'"), 1);
+    EXPECT_EQ(scalar<std::string>("SELECT icao24 FROM flights WHERE NOT anonymized"), "4b8003");
+    EXPECT_EQ(scalar<int>("SELECT count(*) FROM flights WHERE anonymized AND callsign IS NULL AND icao24 LIKE '~%'"), 3);
+    // The two flights of one aircraft on one day share a pseudonym: daily counts are unchanged.
+    EXPECT_EQ(scalar<int>("SELECT count(DISTINCT icao24) FROM flights WHERE anonymized"), 2);
+    EXPECT_EQ(scalar<int>("SELECT sum(aircraft) FROM daily_traffic"), daily_aircraft_before);
+    EXPECT_TRUE(scalar<bool>("SELECT icao24 LIKE '~%' AND callsign IS NULL AND track IS NULL FROM positions_hourly"));
+    EXPECT_TRUE(scalar<bool>("SELECT icao24 LIKE '~%' AND callsign IS NULL AND key = 'holding:' || icao24 || ':' || "
+                             "extract(epoch FROM start_time)::bigint FROM anomaly_events"));
+}
+
+TEST_F(PgStoreTest, ForgetAircraftDeletesEverythingAboutIt) {
+    const auto now = std::chrono::system_clock::now();
+    auto a = make_state("4bb1a2", 40.98, 28.82);
+    a.callsign = "TCABC";
+    auto b = make_state("4b8e01", 39.9, 32.8);
+    store_->insert_positions(now, {a, b});
+    EXPECT_EQ(scalar<long>("SELECT sema_forget_aircraft(' TCABC ')"), 1);
+    EXPECT_EQ(scalar<long>("SELECT sema_forget_aircraft('4B8E01')"), 1);
+    EXPECT_EQ(scalar<int>("SELECT count(*) FROM positions"), 0);
 }

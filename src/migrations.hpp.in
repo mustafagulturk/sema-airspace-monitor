@@ -6,4 +6,5 @@ namespace sema::migrations {
 inline constexpr std::string_view k001Init = R"__sql__(@SEMA_SQL_001_INIT@)__sql__";
 inline constexpr std::string_view k002Events = R"__sql__(@SEMA_SQL_002_EVENTS@)__sql__";
 inline constexpr std::string_view k003History = R"__sql__(@SEMA_SQL_003_HISTORY@)__sql__";
+inline constexpr std::string_view k004Privacy = R"__sql__(@SEMA_SQL_004_PRIVACY@)__sql__";
 }

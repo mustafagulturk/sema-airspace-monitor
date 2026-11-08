@@ -18,6 +18,8 @@
 //   --label TEXT    shown in the map's replay banner (e.g. "sentetik veri")
 //   --addr ADDR     listen address for --serve (default 127.0.0.1)
 //   --web-root DIR  built web map (default ./web/dist)
+//   --identifiers M what the map shows about each aircraft: hidden, airline or
+//                   full (default: SEMA_IDENTIFIERS, else hidden; see privacy.hpp)
 //   --events        also list every anomaly event and the detector metrics
 //                   (event counts and rates, for tuning thresholds)
 //   --loss-min-coverage N  signal-loss rule: reports needed in the last
@@ -67,6 +69,7 @@
 #include "sema/history.hpp"
 #include "sema/live.hpp"
 #include "sema/live_server.hpp"
+#include "sema/privacy.hpp"
 #include "sema/report.hpp"
 #include "sema/snapshot_io.hpp"
 #include "sema/tracker.hpp"
@@ -95,11 +98,12 @@ struct Options {
     std::string label;
     std::string addr = "127.0.0.1";
     std::string web_root = "web/dist";
+    std::string identifiers;
 };
 
 [[noreturn]] void usage(int code) {
     std::cerr << "usage: sema_replay <recording.jsonl> [--data-dir DIR] [--no-area] [--accel-psd Q] [--ct-accel-psd Q] [--turn-psd Q] [--json] "
-                 "[--snapshots] [--stats] [--report FILE] [--events-csv FILE] [--labels FILE] [--events [--loss-min-coverage N] [--anomaly NAME=V]...] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] "
+                 "[--snapshots] [--stats] [--report FILE] [--events-csv FILE] [--labels FILE] [--events [--loss-min-coverage N] [--anomaly NAME=V]...] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] [--identifiers MODE] "
                  "[--web-root DIR]]\n";
     std::exit(code);
 }
@@ -134,6 +138,9 @@ Options parse(int argc, char** argv) {
             o.addr = value();
         } else if (a == "--web-root") {
             o.web_root = value();
+        } else if (a == "--identifiers") {
+            o.identifiers = value();
+            (void)sema::parse_identifier_mode(o.identifiers);
         } else if (a == "--json") {
             o.json = true;
         } else if (a == "--events") {
@@ -309,6 +316,16 @@ int run(const Options& o) {
     sigaddset(&signals, SIGTERM);
     std::unique_ptr<sema::LiveServer> server;
     std::unique_ptr<sema::LiveState> live;
+    std::string identifiers = o.identifiers;
+    if (identifiers.empty()) {
+        const char* env = std::getenv("SEMA_IDENTIFIERS");
+        identifiers = env != nullptr && *env != '\0' ? env : "hidden";
+    }
+    const sema::IdentityMasker masker(sema::parse_identifier_mode(identifiers));
+    auto public_json = [&masker](nlohmann::json j) {
+        masker.apply(j);
+        return j.dump();
+    };
     if (o.serve_port) {
         if (!area) throw std::runtime_error("--serve needs the boundary (drop --no-area)");
         pthread_sigmask(SIG_BLOCK, &signals, nullptr);
@@ -321,6 +338,8 @@ int run(const Options& o) {
         hc.mode = "replay";
         hc.label = o.label;
         hc.max_replay_s = 24 * 3600.0;  // local use: allow long ranges
+        hc.mask_identifiers = [&masker](nlohmann::json& j) { masker.apply(j); };
+        hc.site = {{"identifiers", identifiers}};
         auto api = std::make_shared<sema::HistoryApi>(preload_history(o, cfg, in_area, *airports), airports, hc);
         sc.api = [api](const sema::ApiRequest& req) { return api->handle(req); };
         server = std::make_unique<sema::LiveServer>(sc);
@@ -328,8 +347,8 @@ int run(const Options& o) {
         live = std::make_unique<sema::LiveState>(*area);
         std::string label = "x" + fmt(o.speed, o.speed == std::round(o.speed) ? 0 : 1);
         if (!o.label.empty()) label = o.label + ", " + label;
-        server->publish("hello", sema::live_hello_json("replay", label).dump());
-        server->publish("events", detector.events_json().dump());
+        server->publish("hello", sema::live_hello_json("replay", label, sema::to_string(masker.mode())).dump());
+        server->publish("events", public_json(detector.events_json()));
         std::cerr << "sema_replay: serving the map on http://" << o.addr << ':' << server->port() << "/ at x"
                   << o.speed << ", Ctrl-C to stop\n";
     }
@@ -362,10 +381,10 @@ int run(const Options& o) {
         finished.insert(finished.end(), ev.closed.begin(), ev.closed.end());
         for (auto& f : flight_log.update(*snap, r, tracker)) flights.push_back(std::move(f));
         if (server) {
-            if (!ev.empty()) server->publish("events", detector.events_json().dump());
+            if (!ev.empty()) server->publish("events", public_json(detector.events_json()));
             live->update(*snap, tracker);
             server->publish("coverage", live->coverage_json().dump());
-            server->publish("snapshot", live->snapshot_json({live->data_time(), o.speed}).dump());
+            server->publish("snapshot", public_json(live->snapshot_json({live->data_time(), o.speed})));
         }
         if (o.snapshots) {
             nlohmann::json ended = nlohmann::json::array();
@@ -382,7 +401,7 @@ int run(const Options& o) {
     }
     if (server && !stopped) {
         // Freeze the map at the end of the recording until Ctrl-C.
-        server->publish("snapshot", live->snapshot_json({live->data_time(), 0.0}).dump());
+        server->publish("snapshot", public_json(live->snapshot_json({live->data_time(), 0.0})));
         std::cerr << "sema_replay: end of recording, Ctrl-C to stop\n";
         int sig = 0;
         sigwait(&signals, &sig);

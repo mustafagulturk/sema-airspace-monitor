@@ -9,6 +9,12 @@ describe("parseMessage", () => {
   it("accepts hello", () => {
     const r = parseMessage('{"type":"hello","protocol":1,"source":"replay","label":"x10","attribution":"OpenSky"}');
     expect(r.ok && r.message.type === "hello" && r.message.source).toBe("replay");
+    // Older servers do not send the mode: assume identifiers are hidden.
+    expect(r.ok && r.message.type === "hello" && r.message.identifiers).toBe("hidden");
+  });
+  it("reads the identifier mode", () => {
+    const r = parseMessage('{"type":"hello","protocol":1,"source":"live","label":"","attribution":"","identifiers":"airline"}');
+    expect(r.ok && r.message.type === "hello" && r.message.identifiers).toBe("airline");
   });
   it("rejects other protocol versions", () => {
     const r = parseMessage('{"type":"hello","protocol":2,"source":"live","label":"","attribution":""}');

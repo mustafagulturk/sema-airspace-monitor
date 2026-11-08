@@ -4,7 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["vite/client", "geojson"],
+    "types": ["vite/client", "geojson", "node"],
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,

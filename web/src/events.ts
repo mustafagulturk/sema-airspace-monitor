@@ -1,7 +1,7 @@
 // Anomaly events (phase 4): labels, formatting and map geometry (pure).
 
 import type { AnomalyEvent, EventKind } from "./protocol";
-import { fmtInt, formatAltitude, formatHeading } from "./format";
+import { fmtInt, formatAltitude, formatHeading, formatIcao } from "./format";
 
 export const KIND_LABEL: Record<EventKind, string> = {
   emergency: "Acil durum kodu",
@@ -93,7 +93,7 @@ export function eventFacts(e: AnomalyEvent): [string, string][] {
   const d = e.details;
   const rows: [string, string][] = [
     ["Tür", KIND_LABEL[e.kind]],
-    ["ICAO24", e.icao24.toUpperCase()],
+    ["ICAO24", formatIcao(e.icao24)],
     ["Tescil ülkesi", e.country || "—"],
     ["Başlangıç", formatEventTime(e.start)],
     [e.active ? "Süre (sürüyor)" : "Süre", formatDuration(e.end - e.start)],

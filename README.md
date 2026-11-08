@@ -441,7 +441,9 @@ tamamlar: sızıntı varsa yayına çıkmadan yakalanır.
 ```
 
 OpenSky bilgileri olmadan arayüzü denemek için bir kayıt hızlandırılmış oynatılabilir. Harita bu
-durumda üstte "Kayıttan oynatma" bandı gösterir:
+durumda üstte "Kayıttan oynatma" bandı gösterir. Uçak kimlikleri burada da varsayılan olarak gizlidir;
+sentetik kayıtta uydurma kimlikleri görmek için `--identifiers full` eklenebilir (gerçek kayıtta
+kullanmayın):
 
 ```bash
 ./build/release/sema_replay tests/fixtures/replay_synthetic.jsonl --serve 8080 --speed 10 --label "sentetik veri"
@@ -479,6 +481,12 @@ eklenmez; `.env` dosyası `.gitignore` içindedir.
 
 ### Yayın (VPS, alan adı, HTTPS)
 
+> **Herkese açık yayından önce OpenSky'ın yazılı iznini alın.** OpenSky'ın kullanım koşulları
+> ([opensky-network.org/about/terms-of-use](https://opensky-network.org/about/terms-of-use)), REST
+> API'nin canlı bir ürün, servis veya otomatik sistemde kullanılmasını ticari olmasa bile önceden
+> yazılı lisansa bağlar. `docker-compose.prod.yml`, `SEMA_OPENSKY_PERMISSION` doldurulmadan
+> başlamaz. Ayrıntılar: [Etik ve hukuki sınırlar](#etik-ve-hukuki-sınırlar).
+
 Tek bir küçük VPS yeterlidir (2 vCPU, 2–4 GB RAM, 40 GB disk). **Önce erişimi deneyin:** OpenSky bazı
 büyük bulut sağlayıcılarının IP'lerini engelleyebilir; sunucuda
 `curl -sI https://opensky-network.org/api/states/all?lamin=40&lomin=28&lamax=41&lomax=29` 200
@@ -487,7 +495,9 @@ dönmelidir.
 1. Alan adınız için bir A (ve varsa AAAA) kaydını sunucunun IP'sine yönlendirin.
 2. Sunucuda Docker ve Compose eklentisini kurun, 80 ve 443 portlarını açın.
 3. Depoyu klonlayın, `.env.example`'ı `.env` olarak kopyalayıp doldurun: `OPENSKY_CLIENT_ID`,
-   `OPENSKY_CLIENT_SECRET`, `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`, `SEMA_DOMAIN`.
+   `OPENSKY_CLIENT_SECRET`, `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`, `SEMA_DOMAIN`,
+   `SEMA_OPENSKY_PERMISSION` (OpenSky'dan aldığınız iznin kısa notu), `SEMA_OPERATOR_NAME` ve
+   `SEMA_CONTACT_EMAIL` (gizlilik sayfasındaki künye ve kaldırma talepleri için).
 4. Başlatın:
 
 ```bash
@@ -643,8 +653,46 @@ sonra yerinde sayar.
   yerelde kalır, depoya konmaz (`.gitignore`). Depodaki kayıtlar `tools/` altındaki betiklerle üretilmiş
   sentetik verilerdir. README'ye yalnızca toplu sayılar girer; `sema_replay --report` çıktısında uçak
   adresi ve çağrı adı bulunmaz, çünkü özel bir uçağın olayı bir kişiyi işaret edebilir.
-- **Kaynak gösterimi.** Veri OpenSky Network'ten gelir ve OpenSky'ın istediği makale aşağıda
-  gösterilir. Aynı atıf haritanın köşesinde ve "Hakkında" panelinde de yer alır.
+- **OpenSky'ın yazılı izni.** OpenSky'ın koşulları veriyi kâr amacı gütmeyen araştırma ve eğitim
+  için lisanslar; REST API'nin canlı bir ürün, servis veya otomatik sistemde kullanılması (kâr amacı
+  gütmeyenler için bile) önceden yazılı lisans ister. Bu yüzden herkese açık site OpenSky'ın yazılı
+  izni olmadan yayına alınmaz: `docker-compose.prod.yml` `SEMA_OPENSKY_PERMISSION` boşken başlamaz.
+  Yerelde `--dry-run` ile denemek ve ölçüm yapmak araştırma kullanımıdır. Koşullar ayrıca yayımlanan
+  her sayfanın (web sayfaları dahil) OpenSky'a bildirilmesini ister; site yayına girince bağlantısı
+  OpenSky'a gönderilir.
+- **Uçak kimlikleri gizlenir.** OpenSky'ın koşulları yayında uçak kimliklerinin anonimleştirilmesini
+  ister; ayrıca özel bir uçağın ICAO24 adresi veya tescili bir kişiyi işaret edebilir (KVKK/GDPR).
+  Sunucu, haritaya ve `/api/replay`'e giden her mesajda ICAO24 adresini anonim bir kimlikle değiştirir
+  ve çağrı kodunu gizler (`include/sema/privacy.hpp`). Anonim kimlik, açılışta rastgele üretilip hiçbir
+  yere yazılmayan bir anahtarla (SipHash) adresten ve günden türetilir: harita bir uçağı gün içinde
+  izleyebilir ama kimlik adrese geri çevrilemez, günler arasında bağlanamaz. `SEMA_IDENTIFIERS` ile
+  seçilir: `hidden` (varsayılan), `airline` (yalnızca THY7 gibi havayolu sefer kodları; tescil
+  biçimindeki özel uçak çağrı kodları gizli) veya `full` (yalnızca OpenSky'ın yazılı izni kimliklerin
+  gösterilmesine açıkça izin veriyorsa). Veritabanı ve yerel günlük gerçek değerleri tutar; bunlar
+  dışarı açılmaz.
+- **Kimlikler sınırlı süre saklanır.** Ham konumlar `SEMA_RETENTION_HOURS` sonra silinir. Uçuş
+  kayıtları, saatlik özetler ve olaylardaki ICAO24, çağrı kodu ve iz `SEMA_IDENTITY_DAYS` (varsayılan
+  30 gün) sonra geri döndürülemez biçimde anonimleştirilir (`sql/004_privacy.sql`,
+  `sema_anonymize_identities`); günlük uçak sayıları doğru kalır, geriye kimliksiz istatistik kalır.
+- **Kaldırma talepleri.** Sahibi ya da işleticisi istemeyen bir uçak `data/optout.txt` dosyasına
+  eklenir; askerî uçaklarla birlikte, hiçbir şey yazılmadan atılır. Eski kayıtları
+  `SELECT sema_forget_aircraft('4bb1a2');` (ya da tescil/çağrı kodu ile) siler. Talep yolu gizlilik
+  sayfasında yazar.
+- **Gizlilik sayfası ve künye.** `/gizlilik.html`; işleteni ve iletişim adresini (5651 sayılı Kanun
+  m. 3'teki tanıtıcı bilgi yükümlülüğü), sorumluluk reddini (seyrüsefer veya emniyet amaçlı
+  kullanılamaz, resmî bilgi değildir, OpenSky/DHMİ/SHGM ile bağlantısı yoktur), KVKK aydınlatma
+  metnini, saklama sürelerini ve ziyaretçi verisini anlatır. Değerler çalışan sunucudan
+  (`/api/status` içindeki `site`) okunur.
+- **Ziyaretçi izlenmez.** Çerez, analitik ve reklam yoktur. Caddy erişim kaydı tutmaz, toplayıcı
+  ziyaretçi IP'si yazmaz. Harita altlığı OpenFreeMap'ten yüklendiği için ziyaretçinin IP'si oraya
+  ulaşır; gizlilik sayfası bunu söyler.
+- **Kaynak gösterimi ve lisanslar.** Veri OpenSky Network'ten gelir ve OpenSky'ın istediği makale
+  aşağıda gösterilir. Aynı atıf haritanın köşesinde, "Hakkında" panelinde ve gizlilik sayfasında da
+  yer alır; harita altlığının OpenStreetMap/OpenMapTiles atfı harita köşesindedir. Kullanılan
+  kütüphanelerin ve verilerin lisansları `THIRD_PARTY_NOTICES.md` içindedir; web derlemesi paketlenen
+  npm kütüphanelerinin lisans metinlerini `third-party-licenses.txt` olarak yanına koyar.
+
+Bu bölüm hukuki tavsiye değildir; projenin riskleri azaltmak için aldığı önlemleri anlatır.
 
 ## Kaynaklar
 
@@ -662,5 +710,6 @@ Bu proje [OpenSky Network](https://opensky-network.org) verisini kullanır:
 
 ## Lisans
 
-Kaynak kod MIT lisanslıdır (bkz. `LICENSE`). OpenSky verisi OpenSky'ın kendi kullanım koşullarına
-tabidir.
+Kaynak kod MIT lisanslıdır (bkz. `LICENSE`). Üçüncü taraf kütüphane ve veri lisansları:
+`THIRD_PARTY_NOTICES.md`. OpenSky verisi OpenSky'ın kendi kullanım koşullarına tabidir ve bu depoyla
+dağıtılmaz.

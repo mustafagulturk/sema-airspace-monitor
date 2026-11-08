@@ -1,7 +1,8 @@
 # Semâ on a single VPS: database, collector (with the web map), HTTPS reverse
 # proxy, Prometheus and Grafana. Only Caddy is reachable from the internet.
 #
-#   cp .env.example .env     # fill in OpenSky credentials, passwords, SEMA_DOMAIN
+#   cp .env.example .env     # fill in OpenSky credentials, passwords, SEMA_DOMAIN,
+#                            # operator/contact and SEMA_OPENSKY_PERMISSION
 #   docker compose -f docker-compose.prod.yml up -d --build
 #
 # Caddy gets a Let's Encrypt certificate for SEMA_DOMAIN by itself once the
@@ -41,14 +42,27 @@ services:
       SEMA_DATABASE_URL: postgresql://${POSTGRES_USER:-sema}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sema}
       SEMA_MIN_INTERVAL_S: ${SEMA_MIN_INTERVAL_S:-60}
       SEMA_DAILY_CREDITS: ${SEMA_DAILY_CREDITS:-4000}
-      # Raw positions (replayable in "Geçmiş") are kept this long; flights forever.
+      # Raw positions (replayable in "Geçmiş") are kept this long; flights stay for
+      # statistics, with identifiers anonymised after SEMA_IDENTITY_DAYS.
       SEMA_RETENTION_HOURS: ${SEMA_RETENTION_HOURS:-168}
       SEMA_MAX_REPLAY_HOURS: ${SEMA_MAX_REPLAY_HOURS:-4}
+      # Legal (README, "Etik ve hukuki sınırlar"). OpenSky's terms require a written
+      # licence for any live/operational use of its REST API, even non-profit:
+      # do not start the public site until you have it, then note it here.
+      SEMA_OPENSKY_PERMISSION: ${SEMA_OPENSKY_PERMISSION:?written permission from OpenSky is required for a public live site; see README}
+      # Shown on /gizlilik.html as the legal notice (5651 s. Kanun m. 3) and data controller (KVKK).
+      SEMA_OPERATOR_NAME: ${SEMA_OPERATOR_NAME:?set SEMA_OPERATOR_NAME in .env}
+      SEMA_CONTACT_EMAIL: ${SEMA_CONTACT_EMAIL:?set SEMA_CONTACT_EMAIL in .env}
+      # hidden (default) | airline | full. Use "full" only if OpenSky's written permission allows it.
+      SEMA_IDENTIFIERS: ${SEMA_IDENTIFIERS:-hidden}
+      SEMA_IDENTITY_DAYS: ${SEMA_IDENTITY_DAYS:-30}
       # Optional OpenSky aircraft database CSV for the operator rule, placed in
       # ./extra on the server, e.g. SEMA_AIRCRAFT_DB=/app/extra/aircraft-database.csv
       SEMA_AIRCRAFT_DB: ${SEMA_AIRCRAFT_DB:-}
     volumes:
       - ./extra:/app/extra:ro
+      # Removal requests: edit data/optout.txt on the server and restart the collector.
+      - ./data/optout.txt:/app/data/optout.txt:ro
     expose:
       - "8080"
     logging:

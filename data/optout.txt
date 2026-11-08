@@ -1,0 +1,12 @@
+# Semâ opt-out list: aircraft that are never stored or shown.
+#
+# When the owner or operator of a civil aircraft asks not to be shown (see the
+# privacy page, web/public/gizlilik.html), add one line here and restart the
+# collector. Entries are dropped together with military/government aircraft,
+# before anything is written to the database, the recording or the map.
+#
+# One entry per line:
+#   4bb1a2            6 digit hex ICAO24 address (preferred: it survives callsign changes)
+#   TCABC             a callsign (e.g. the registration used as callsign)
+#   CALLSIGN:ABC123   a callsign that would otherwise read as a hex address
+# Anything after '#' is a comment. Keep no personal details of the requester here.

@@ -36,6 +36,7 @@ import {
   formatAgo,
   formatAltitude,
   formatHeading,
+  formatIcao,
   formatSigma,
   formatSpeed,
   formatVerticalRate,
@@ -48,6 +49,7 @@ import {
   type CoverageMessage,
   type EventsMessage,
   type HelloMessage,
+  type IdentifierMode,
   type SnapshotMessage,
 } from "./protocol";
 import {
@@ -67,6 +69,13 @@ const DEFAULT_UTC_OFFSET_S = 3 * 3600;
 /** Data older than this (server seconds) marks the feed as stale. */
 const STALE_AFTER_S = 150;
 const ENDED_CLOSE_MS = 2500;
+const IDENTIFIER_NOTE: Record<IdentifierMode, string> = {
+  hidden:
+    "Uçak kimlikleri gizlidir: ICAO24 adresi yerine her gün değişen anonim bir kimlik kullanılır, çağrı kodu gösterilmez.",
+  airline:
+    "ICAO24 adresi yerine her gün değişen anonim bir kimlik kullanılır; yalnızca havayolu sefer kodları (ör. THY7) gösterilir, özel uçakların tescili gösterilmez.",
+  full: "",
+};
 
 function $(id: string): HTMLElement {
   const el = document.getElementById(id);
@@ -139,6 +148,7 @@ const el = {
   about: $("about") as HTMLDialogElement,
   aboutClose: $("about-close") as HTMLButtonElement,
   aboutAttribution: $("about-attribution"),
+  aboutIdentifiers: $("about-identifiers"),
   btnEvents: $("btn-events") as HTMLButtonElement,
   eventsBadge: $("events-badge"),
   events: $("events"),
@@ -243,8 +253,8 @@ function renderPanel(): void {
   const now = viewNow();
   const p = extrapolate(a, now);
   setText(el.pTitle, displayName(a.callsign, a.icao24));
-  setText(el.pSub, a.callsign.trim() ? a.icao24.toUpperCase() : "Çağrı kodu yok");
-  setText(el.pIcao, a.icao24.toUpperCase());
+  setText(el.pSub, a.callsign.trim() ? formatIcao(a.icao24) : "Çağrı kodu gösterilmiyor");
+  setText(el.pIcao, formatIcao(a.icao24));
   setText(el.pCountry, a.country || "—");
   setText(el.pAlt, formatAltitude(p.alt, a.ground));
   setText(el.pSpeed, formatSpeed(a.speed));
@@ -497,6 +507,7 @@ function onHello(m: HelloMessage): void {
   el.bannerReplay.hidden = !replay;
   setText(el.replayLabel, replay && m.label ? `— ${m.label}` : "");
   if (m.attribution) setText(el.aboutAttribution, m.attribution);
+  setText(el.aboutIdentifiers, IDENTIFIER_NOTE[m.identifiers]);
   document.title = replay ? "Semâ — Kayıttan oynatma" : "Semâ — Canlı Türkiye Hava Sahası";
 }
 
@@ -618,7 +629,7 @@ async function initMap(): Promise<void> {
     attributionControl: {
       compact: true,
       customAttribution:
-        '<a href="https://opensky-network.org" target="_blank" rel="noopener">Veri: OpenSky Network</a>',
+        '<a href="https://opensky-network.org" target="_blank" rel="noopener">Veri: OpenSky Network</a> | <a href="/gizlilik.html">Gizlilik ve künye</a>',
     },
   });
   mapRef = map;

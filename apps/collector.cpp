@@ -16,6 +16,13 @@
 //   SEMA_WEB_ROOT           built web map to serve (default ./web/dist)
 //   SEMA_EVENTS_FILE        same as --events
 //   SEMA_MAX_REPLAY_HOURS   longest range the map may ask to replay (default 4)
+//   SEMA_IDENTIFIERS        what the public map/API shows: hidden (default), airline or full
+//                           (see include/sema/privacy.hpp and README, Etik ve hukuki sınırlar)
+//   SEMA_OPTOUT_FILE        aircraft never stored or shown (default DATA_DIR/optout.txt)
+//   SEMA_IDENTITY_DAYS      flights, hourly tracks and events keep ICAO24/callsign this many
+//                           days, then are anonymised (default 30)
+//   SEMA_OPERATOR_NAME, SEMA_CONTACT_EMAIL  who runs the site; shown on the privacy page
+//                           (/gizlilik.html) for removal requests and as the legal notice
 // Flags:
 //   --once           run a single cycle and exit
 //   --dry-run        do not touch the database; print a summary instead
@@ -68,6 +75,7 @@
 #include "sema/pg_history.hpp"
 #include "sema/pg_store.hpp"
 #include "sema/pipeline.hpp"
+#include "sema/privacy.hpp"
 #include "sema/prom_metrics.hpp"
 #include "sema/snapshot_io.hpp"
 #include "sema/tracker.hpp"
@@ -92,6 +100,11 @@ struct Options {
     std::string serve_addr = "127.0.0.1";
     std::string web_root = "web/dist";
     long max_replay_hours = 4;
+    std::string identifiers = "hidden";
+    std::string opt_out_file;
+    long identity_days = 30;
+    std::string operator_name;
+    std::string contact_email;
     bool once = false;
     bool dry_run = false;
 };
@@ -160,6 +173,12 @@ Options parse_options(int argc, char** argv) {
     o.daily_credits = env_long("SEMA_DAILY_CREDITS", o.daily_credits, 1);
     o.retention_hours = env_long("SEMA_RETENTION_HOURS", o.retention_hours, 1);
     o.max_replay_hours = env_long("SEMA_MAX_REPLAY_HOURS", o.max_replay_hours, 1);
+    o.identifiers = env_or("SEMA_IDENTIFIERS", o.identifiers);
+    (void)sema::parse_identifier_mode(o.identifiers);  // fail early on a typo
+    o.opt_out_file = env_or("SEMA_OPTOUT_FILE", "");
+    o.identity_days = env_long("SEMA_IDENTITY_DAYS", o.identity_days, 1);
+    o.operator_name = env_or("SEMA_OPERATOR_NAME", "");
+    o.contact_email = env_or("SEMA_CONTACT_EMAIL", "");
     if (o.client_id.empty() || o.client_secret.empty()) {
         throw std::runtime_error("OPENSKY_CLIENT_ID and OPENSKY_CLIENT_SECRET must be set");
     }
@@ -255,6 +274,14 @@ int run(const Options& opt) {
     sema::AircraftRegistry registry;
     if (!opt.aircraft_db.empty()) registry = sema::AircraftRegistry::load_csv(opt.aircraft_db);
     const sema::MilitaryFilter military(sema::MilitaryRules::load(data_dir / "military_rules.json"), &registry);
+    const auto opt_out =
+        sema::OptOutList::load(opt.opt_out_file.empty() ? data_dir / "optout.txt" : std::filesystem::path(opt.opt_out_file));
+    // Everything published (WebSocket feed, /api/replay) goes through the masker.
+    const sema::IdentityMasker masker(sema::parse_identifier_mode(opt.identifiers));
+    auto public_json = [&masker](nlohmann::json j) {
+        masker.apply(j);
+        return j.dump();
+    };
 
     std::unique_ptr<sema::PgStore> store;
     if (!opt.dry_run) {
@@ -302,6 +329,12 @@ int run(const Options& opt) {
         hc.mode = "live";
         hc.label = opt.dry_run ? "veritabanısız deneme" : "";
         hc.max_replay_s = static_cast<double>(opt.max_replay_hours) * 3600.0;
+        hc.mask_identifiers = [&masker](nlohmann::json& j) { masker.apply(j); };
+        hc.site = {{"operator", opt.operator_name},
+                   {"contact", opt.contact_email},
+                   {"identifiers", opt.identifiers},
+                   {"identity_days", opt.identity_days},
+                   {"retention_hours", opt.retention_hours}};
         auto api = std::make_shared<sema::HistoryApi>(history, airports, hc);
         sc.api = [api, history, &prom](const sema::ApiRequest& req) -> std::optional<sema::ApiResponse> {
             if (req.path == "/metrics") {
@@ -322,9 +355,9 @@ int run(const Options& opt) {
         };
         server = std::make_unique<sema::LiveServer>(sc);
         server->start();
-        server->publish("hello", sema::live_hello_json("live", "").dump());
+        server->publish("hello", sema::live_hello_json("live", "", opt.identifiers).dump());
         server->publish("coverage", live.coverage_json().dump());
-        server->publish("events", detector.events_json().dump());
+        server->publish("events", public_json(detector.events_json()));
         log_line({{"event", "live_server"}, {"address", opt.serve_addr}, {"port", server->port()},
                   {"web_root", opt.web_root}});
     }
@@ -339,6 +372,8 @@ int run(const Options& opt) {
               {"box_area_sq_deg", box.area_sq_deg()},
               {"credit_cost", cost},
               {"registry_size", registry.size()},
+              {"opt_out_size", opt_out.size()},
+              {"identifiers", opt.identifiers},
               {"recording", !opt.record_file.empty()},
               {"dry_run", opt.dry_run}});
 
@@ -368,7 +403,7 @@ int run(const Options& opt) {
         if (r.status == sema::FetchResult::Status::Ok && r.snapshot) {
             entry.data_time = r.snapshot->time;
             sema::FilterStats stats;
-            auto kept = sema::filter_states(r.snapshot->states, area, military, stats);
+            auto kept = sema::filter_states(r.snapshot->states, area, military, stats, &opt_out);
             entry.states_total = stats.total;
             entry.states_kept = stats.kept;
             entry.dropped_outside = stats.dropped_outside + stats.dropped_no_position;
@@ -407,7 +442,7 @@ int run(const Options& opt) {
                         line["db_error"] = e.what();
                     }
                 }
-                if (server) server->publish("events", detector.events_json().dump());
+                if (server) server->publish("events", public_json(detector.events_json()));
             }
             line["anomalies"] = {{"opened", ev.opened.size()}, {"closed", ev.closed.size()},
                                  {"active", detector.active().size()}};
@@ -439,7 +474,7 @@ int run(const Options& opt) {
                 const double now_s =
                     std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
                 server->publish("coverage", live.coverage_json().dump());
-                server->publish("snapshot", live.snapshot_json({now_s, 1.0}).dump());
+                server->publish("snapshot", public_json(live.snapshot_json({now_s, 1.0})));
                 line["live_clients"] = server->client_count();
                 prom.set_gauge("sema_live_clients", "Connected WebSocket clients", server->client_count());
             }
@@ -453,6 +488,7 @@ int run(const Options& opt) {
                          {"dropped_outside", stats.dropped_outside},
                          {"dropped_no_position", stats.dropped_no_position},
                          {"dropped_military", stats.dropped_military},
+                         {"dropped_opt_out", stats.dropped_opt_out},
                          {"skipped_rows", r.skipped_rows},
                          {"written", written}});
         } else if (!r.error.empty()) {
@@ -466,6 +502,10 @@ int run(const Options& opt) {
                     const auto pruned = store->rollup_and_prune(std::chrono::hours(opt.retention_hours));
                     line["pruned_rows"] = pruned;
                     prom.add_counter("sema_pruned_rows_total", "Raw position rows rolled up and deleted", pruned);
+                    const auto anonymized = store->anonymize_identities(std::chrono::days(opt.identity_days));
+                    line["anonymized_rows"] = anonymized;
+                    prom.add_counter("sema_anonymized_rows_total",
+                                     "Rows whose aircraft identifiers were removed after SEMA_IDENTITY_DAYS", anonymized);
                     last_rollup = started;
                 }
             } catch (const std::exception& e) {

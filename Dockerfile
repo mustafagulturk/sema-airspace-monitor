@@ -39,6 +39,7 @@ RUN apt-get update -q \
 WORKDIR /app
 COPY --from=build /src/build/sema_collector /src/build/sema_replay /usr/local/bin/
 COPY data/ /app/data/
+COPY LICENSE THIRD_PARTY_NOTICES.md /app/
 COPY --from=web /src/web/dist/ /app/web/
 ENV SEMA_DATA_DIR=/app/data \
     SEMA_WEB_ROOT=/app/web \

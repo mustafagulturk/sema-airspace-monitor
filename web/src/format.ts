@@ -101,7 +101,19 @@ export function formatSigma(m: number): string {
   return `±${fmtInt(m)} m`;
 }
 
+/** The server replaces ICAO24 addresses with "~" + 8 hex digits unless it runs with SEMA_IDENTIFIERS=full. */
+export function isPseudonym(icao24: string): boolean {
+  return icao24.startsWith("~");
+}
+
+/** ICAO24 for display: the address, or "Gizli" for a pseudonym. */
+export function formatIcao(icao24: string): string {
+  return isPseudonym(icao24) ? "Gizli" : icao24.toUpperCase();
+}
+
 export function displayName(callsign: string, icao24: string): string {
   const c = callsign.trim();
-  return c !== "" ? c : icao24.toUpperCase();
+  if (c !== "") return c;
+  // A short tag so two anonymous aircraft can still be told apart for the day.
+  return isPseudonym(icao24) ? `Uçak ${icao24.slice(-4).toUpperCase()}` : icao24.toUpperCase();
 }
