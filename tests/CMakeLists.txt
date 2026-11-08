@@ -13,8 +13,11 @@ add_executable(sema_unit_tests
   test_metrics.cpp
   test_tracker.cpp
   test_snapshot_io.cpp
+  test_live.cpp
+  test_static_files.cpp
+  test_live_server.cpp
 )
-target_link_libraries(sema_unit_tests PRIVATE sema_core GTest::gtest_main)
+target_link_libraries(sema_unit_tests PRIVATE sema_core sema_live Boost::headers GTest::gtest_main)
 target_compile_definitions(sema_unit_tests PRIVATE
   SEMA_DATA_DIR="${PROJECT_SOURCE_DIR}/data"
   SEMA_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")

@@ -11,21 +11,36 @@
 //   --ct-accel-psd Q turn EKF along-track acceleration noise, m^2/s^3
 //   --json          print the full metrics as JSON instead of a table
 //   --snapshots     also print one JSON line per snapshot
+//   --serve PORT    also serve the live map on PORT, playing the recording in
+//                   (scaled) real time; after the last snapshot the map is
+//                   frozen until Ctrl-C, then the metrics are printed
+//   --speed X       playback speed for --serve (default 10)
+//   --label TEXT    shown in the map's replay banner (e.g. "sentetik veri")
+//   --addr ADDR     listen address for --serve (default 127.0.0.1)
+//   --web-root DIR  built web map (default ./web/dist)
 
+#include <pthread.h>
+#include <signal.h>
+
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <functional>
-#include <optional>
+#include <ctime>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
 #include <nlohmann/json.hpp>
 
 #include "sema/geo.hpp"
+#include "sema/live.hpp"
+#include "sema/live_server.hpp"
 #include "sema/snapshot_io.hpp"
 #include "sema/tracker.hpp"
 
@@ -40,11 +55,16 @@ struct Options {
     std::optional<double> accel_psd;
     std::optional<double> turn_psd;
     std::optional<double> ct_accel_psd;
+    std::optional<long> serve_port;
+    double speed = 10.0;
+    std::string label;
+    std::string addr = "127.0.0.1";
+    std::string web_root = "web/dist";
 };
 
 [[noreturn]] void usage(int code) {
     std::cerr << "usage: sema_replay <recording.jsonl> [--data-dir DIR] [--no-area] [--accel-psd Q] [--ct-accel-psd Q] [--turn-psd Q] [--json] "
-                 "[--snapshots]\n";
+                 "[--snapshots] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] [--web-root DIR]]\n";
     std::exit(code);
 }
 
@@ -66,6 +86,18 @@ Options parse(int argc, char** argv) {
             o.ct_accel_psd = std::stod(value());
         } else if (a == "--turn-psd") {
             o.turn_psd = std::stod(value());
+        } else if (a == "--serve") {
+            o.serve_port = std::stol(value());
+            if (*o.serve_port < 0 || *o.serve_port > 65535) usage(2);
+        } else if (a == "--speed") {
+            o.speed = std::stod(value());
+            if (!(o.speed > 0.0)) usage(2);
+        } else if (a == "--label") {
+            o.label = value();
+        } else if (a == "--addr") {
+            o.addr = value();
+        } else if (a == "--web-root") {
+            o.web_root = value();
         } else if (a == "--json") {
             o.json = true;
         } else if (a == "--snapshots") {
@@ -140,8 +172,61 @@ int run(const Options& o) {
 
     sema::Tracker tracker(cfg, in_area);
     sema::SnapshotReader reader(o.input);
+
+    // Live map. Signals are blocked before the server thread starts and are
+    // then waited for with sigtimedwait, which doubles as the pacing sleep.
+    sigset_t signals;
+    sigemptyset(&signals);
+    sigaddset(&signals, SIGINT);
+    sigaddset(&signals, SIGTERM);
+    std::unique_ptr<sema::LiveServer> server;
+    std::unique_ptr<sema::LiveState> live;
+    if (o.serve_port) {
+        if (!area) throw std::runtime_error("--serve needs the boundary (drop --no-area)");
+        pthread_sigmask(SIG_BLOCK, &signals, nullptr);
+        sema::LiveServerConfig sc;
+        sc.address = o.addr;
+        sc.port = static_cast<std::uint16_t>(*o.serve_port);
+        sc.web_root = o.web_root;
+        sc.files["/boundary.geojson"] = std::filesystem::path(o.data_dir) / "turkey_boundary.geojson";
+        server = std::make_unique<sema::LiveServer>(sc);
+        server->start();
+        live = std::make_unique<sema::LiveState>(*area);
+        std::string label = "x" + fmt(o.speed, o.speed == std::round(o.speed) ? 0 : 1);
+        if (!o.label.empty()) label = o.label + ", " + label;
+        server->publish("hello", sema::live_hello_json("replay", label).dump());
+        std::cerr << "sema_replay: serving the map on http://" << o.addr << ':' << server->port() << "/ at x"
+                  << o.speed << ", Ctrl-C to stop\n";
+    }
+    // Waits `seconds` of wall time; false if a stop signal arrived.
+    auto wait = [&signals](double seconds) {
+        if (seconds <= 0.0) return true;
+        timespec ts{};
+        ts.tv_sec = static_cast<time_t>(seconds);
+        ts.tv_nsec = static_cast<long>((seconds - static_cast<double>(ts.tv_sec)) * 1e9);
+        return sigtimedwait(&signals, nullptr, &ts) < 0;
+    };
+
+    std::optional<double> first_time;
+    const auto wall0 = std::chrono::steady_clock::now();
+    bool stopped = false;
     while (auto snap = reader.next()) {
+        if (server) {
+            const auto t = static_cast<double>(snap->time);
+            if (!first_time) first_time = t;
+            const double due = (t - *first_time) / o.speed;
+            const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
+            if (!wait(due - elapsed)) {
+                stopped = true;
+                break;
+            }
+        }
         const auto r = tracker.process(*snap);
+        if (server) {
+            live->update(*snap, tracker);
+            server->publish("coverage", live->coverage_json().dump());
+            server->publish("snapshot", live->snapshot_json({live->data_time(), o.speed}).dump());
+        }
         if (o.snapshots) {
             nlohmann::json ended = nlohmann::json::array();
             for (const auto& e : r.ended) ended.push_back({{"icao24", e.icao24}, {"reason", sema::to_string(e.reason)}});
@@ -155,6 +240,14 @@ int run(const Options& o) {
                       << '\n';
         }
     }
+    if (server && !stopped) {
+        // Freeze the map at the end of the recording until Ctrl-C.
+        server->publish("snapshot", live->snapshot_json({live->data_time(), 0.0}).dump());
+        std::cerr << "sema_replay: end of recording, Ctrl-C to stop\n";
+        int sig = 0;
+        sigwait(&signals, &sig);
+    }
+    if (server) server->stop();
     if (o.json) {
         std::cout << tracker.metrics().to_json().dump(2) << '\n';
     } else {

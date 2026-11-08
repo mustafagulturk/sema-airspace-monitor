@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="description" content="Türkiye üzerindeki sivil hava trafiğinin canlı haritası. Veri: OpenSky Network." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1a1d21" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath fill='%231864ab' d='M50 8c4 2 5 9 5 20v12l36 18v7l-36-9-1 22 12 9v6l-16-4-16 4v-6l12-9-1-22-36 9v-7l36-18V28c0-11 1-18 5-20z'/%3E%3C/svg%3E" />
+    <title>Semâ — Canlı Türkiye Hava Sahası</title>
+  </head>
+  <body>
+    <header class="topbar" role="banner">
+      <div class="brand">
+        <span class="live-dot" id="live-dot" aria-hidden="true"></span>
+        <h1>Semâ</h1>
+      </div>
+      <div class="status" role="status" aria-live="polite">
+        <span id="st-count" class="st-count">— uçak</span>
+        <span id="st-age" class="st-age"></span>
+        <span id="st-conn" class="st-conn">Bağlanıyor…</span>
+      </div>
+      <div class="actions">
+        <button type="button" id="btn-coverage" class="btn" aria-pressed="false" aria-label="Kapsama haritasını göster/gizle">Kapsama</button>
+        <button type="button" id="btn-about" class="btn btn-icon" aria-label="Hakkında" aria-haspopup="dialog">?</button>
+      </div>
+    </header>
+
+    <div id="banners" class="banners">
+      <div id="banner-replay" class="banner banner-replay" hidden>
+        <strong>Kayıttan oynatma</strong> <span id="replay-label"></span>
+      </div>
+      <div id="banner-error" class="banner banner-error" role="alert" hidden></div>
+      <div id="banner-style" class="banner banner-info" hidden>Altlık harita yüklenemedi; yalnızca katmanlar gösteriliyor.</div>
+    </div>
+
+    <main id="map" class="map" aria-label="Türkiye hava trafiği haritası"></main>
+
+    <div class="legends" id="legends">
+      <section class="legend legend-alt" aria-label="İrtifa lejantı">
+        <div class="legend-title">İrtifa</div>
+        <div class="legend-bar" id="alt-bar"></div>
+        <div class="legend-scale"><span>0</span><span>20.000</span><span>41.000 ft</span></div>
+        <div class="legend-row"><span class="sw sw-ground"></span>yerde <span class="sw sw-faded"></span>sinyal yok</div>
+      </section>
+      <section class="legend" id="coverage-legend" aria-label="Kapsama lejantı" hidden>
+        <div class="legend-title">Kapsama <span id="cov-meta" class="muted"></span></div>
+        <div class="legend-bar" id="cov-bar"></div>
+        <div class="legend-scale"><span>1</span><span id="cov-max">en çok</span></div>
+        <div class="legend-row"><span class="sw sw-gap"></span><span><b>Boşluk:</b> son 24 saatte bu hücreden hiç konum gelmedi (alıcı kapsaması yok ya da trafik yok)</span></div>
+      </section>
+    </div>
+
+    <aside id="panel" class="panel" tabindex="-1" aria-labelledby="p-title" hidden>
+      <div class="panel-grip" aria-hidden="true"></div>
+      <div class="panel-head">
+        <div>
+          <h2 id="p-title">—</h2>
+          <div id="p-sub" class="muted"></div>
+        </div>
+        <button type="button" id="panel-close" class="btn btn-icon" aria-label="Paneli kapat">✕</button>
+      </div>
+      <div id="p-ended" class="ended" hidden>İz sonlandı</div>
+      <dl class="facts">
+        <div><dt>ICAO24</dt><dd id="p-icao" class="mono"></dd></div>
+        <div><dt title="OpenSky origin_country: ICAO adresine göre tescil ülkesi">Tescil ülkesi</dt><dd id="p-country"></dd></div>
+        <div><dt>İrtifa</dt><dd id="p-alt"></dd></div>
+        <div><dt>Hız</dt><dd id="p-speed"></dd></div>
+        <div><dt>Yön</dt><dd id="p-track"></dd></div>
+        <div><dt>Dikey hız</dt><dd id="p-vrate"></dd></div>
+        <div><dt>İz durumu</dt><dd id="p-state"></dd></div>
+        <div><dt>Son görülme</dt><dd id="p-seen"></dd></div>
+        <div><dt>Konum belirsizliği</dt><dd id="p-sigma"></dd></div>
+      </dl>
+      <p class="muted small panel-note">Konum, son alınan sinyalden ileriye doğru tahmin edilir.</p>
+    </aside>
+
+    <dialog id="about" class="about" aria-labelledby="about-title">
+      <div class="panel-head">
+        <h2 id="about-title">Hakkında</h2>
+        <button type="button" id="about-close" class="btn btn-icon" aria-label="Kapat">✕</button>
+      </div>
+      <p><b>Semâ</b>, Türkiye üzerindeki sivil hava trafiğini canlı olarak gösteren, ticari olmayan bir projedir.</p>
+      <p>Askerî ve devlet hava araçları filtrelenir ve hiçbir zaman gösterilmez.</p>
+      <p>Konumlar ADS-B verisinden tahmin edilir; seyrüsefer veya emniyet amaçlı kullanılamaz.</p>
+      <h3>Veri kaynağı</h3>
+      <p id="about-attribution">Veri: OpenSky Network.</p>
+      <p class="small">Schäfer, Strohmeier, Lenders, Martinovic, Wilhelm, “Bringing Up OpenSky: A Large-scale ADS-B Sensor Network for Research”, <i>IPSN 2014</i>.</p>
+      <p class="small"><a href="https://opensky-network.org" target="_blank" rel="noopener">opensky-network.org</a></p>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -13,7 +13,10 @@ Semâ, Türkiye üzerindeki gerçek **sivil** uçak trafiğini [OpenSky Network]
 > a constant-velocity Kalman filter and a coordinated-turn EKF scored against dead reckoning on every
 > new fix, signal-loss bridging, data-quality rejection (impossible speed, teleports, corrupt
 > altitude) and metrics (prediction error in metres, tracked aircraft, track break rate, processing
-> time per update), plus record/replay of filtered snapshots. Non-commercial, see *Ethical and legal
+> time per update), plus record/replay of filtered snapshots. Phase 3 adds the live map: a Boost.Beast
+HTTP/WebSocket server inside the C++ collector pushes tracker estimates, short trails and a rolling
+24-hour coverage grid to a TypeScript + MapLibre GL front end, which moves each aircraft between
+OpenSky updates with the Kalman filter's own constant-velocity prediction. Non-commercial, see *Ethical and legal
 > limits* below.
 
 ## Durum
@@ -21,8 +24,8 @@ Semâ, Türkiye üzerindeki gerçek **sivil** uçak trafiğini [OpenSky Network]
 | Aşama | İçerik | Durum |
 |---|---|---|
 | 1 | Veri toplama: OpenSky istemcisi, Türkiye filtresi, askeri/devlet filtresi, PostGIS, CI | Tamamlandı |
-| 2 | İz takibi: Kalman filtresi, sinyal kaybı, veri kalitesi, ölçümler | **Geliştiriliyor** |
-| 3 | MapLibre ile canlı harita (WebSocket) | Planlandı |
+| 2 | İz takibi: Kalman filtresi, sinyal kaybı, veri kalitesi, ölçümler | Tamamlandı (gerçek veriyle ölçüm bekliyor) |
+| 3 | MapLibre ile canlı harita (WebSocket), detay paneli, kapsama haritası | **Geliştiriliyor** |
 | 4 | Anomali tespiti (7500/7600/7700, irtifa kaybı, bekleme) | Planlandı |
 | 5 | Tekrar oynatma, istatistik, Docker Compose ile yayın, Prometheus/Grafana | Planlandı |
 
@@ -107,6 +110,49 @@ tespiti için).
 Filtreler her güncellemede yerel teğet düzlemin merkezini izin yeni konumuna taşır; böylece
 düzlem yaklaşımı hatası metrenin altında kalır.
 
+## Canlı harita (Aşama 3)
+
+```
+Tracker ──► LiveState ──────────────────────► LiveServer (Boost.Beast) ──WebSocket /ws──► tarayıcı (TypeScript + MapLibre GL)
+            iz tahmini, kısa iz kuyruğu,        her konunun son mesajı,                    uçak simgeleri, iz kuyrukları,
+            kalkış ülkesi, kapsama ızgarası     statik dosyalar, /healthz                  detay paneli, kapsama katmanı
+```
+
+| Bileşen | Dosya | Görev |
+|---|---|---|
+| `LiveState` | `src/live.cpp` | İzleyicinin tahminlerinden harita mesajını kurar: konum, hız, yön, irtifa, belirsizlik, son 20 filtrelenmiş konumdan iz kuyruğu |
+| `CoverageGrid` | `src/live.cpp` | Türkiye çokgeniyle kesişen 0,5°'lik hücrelerde son 24 saatin konum sayısı (saatlik halka, sabit bellek) |
+| `LiveServer` | `src/live_server.cpp` | Tek G/Ç iş parçacıklı HTTP + WebSocket sunucusu; yeni istemciye her konunun son mesajı, sonra her yeni mesaj; geride kalan istemciyi düşürür |
+| `resolve_static_path` | `src/static_files.cpp` | Web dosyalarını kök dizin dışına çıkmadan (`..`, sembolik bağ) sunar |
+| Web arayüzü | `web/` | TypeScript, Vite, MapLibre GL; ayrıntı için `web/README.md` |
+
+**Akıcı hareket.** OpenSky yaklaşık 65 saniyede bir güncellenir. Sunucu her güncellemede her iz için
+sabit hız Kalman filtresinin o anki durumunu (konum, hız, yön, dikey hız) ve kendi saatini gönderir.
+Tarayıcı iki güncelleme arasında uçağı bu durumdan ileri taşır. Sabit hız modelinin tahmini doğrusal
+olduğu için tarayıcının hesapladığı konum, sunucudaki filtrenin aynı ana tahminiyle aynıdır; yani
+haritadaki hareket görsel bir hile değil, Aşama 2'de hatası ölçülen tahminin kendisidir. Yeni konum
+geldiğinde uçak düzeltilmiş tahmine geçer. Sinyali kesilen iz (coasting) en çok 600 saniye tahminle
+sürer ve soluk gösterilir.
+
+**Mesajlar** (`kLiveProtocolVersion = 1`, JSON): `hello` (kaynak: canlı/kayıt, OpenSky atfı),
+`snapshot` (tüm izler, saat ve hız katsayısı) ve `coverage` (hücre başına rapor sayısı). Tam liste
+`include/sema/live.hpp` içindedir. Anlık görüntü 300 uçakta sıkıştırmasız ~150 KB'tır; WebSocket
+`permessage-deflate` ile sıkıştırılır.
+
+**Detay paneli.** Çağrı adı, ICAO adresi, tescil ülkesi, irtifa, hız, yön, dikey hız, iz durumu,
+son görülme ve konum belirsizliği. Kapsam belgesinde "kalkış ülkesi" yazıyordu; OpenSky'ın
+`origin_country` alanı ise kalkış yerini değil, ICAO adres bloğuna göre uçağın tescil ülkesini verir.
+Durum vektörlerinde kalkış havalimanı yoktur, bu yüzden alan dürüstçe "tescil ülkesi" diye adlandırıldı.
+
+**Kapsama haritası.** Son 24 saatte hiç konum gelmeyen hücre *boşluk* olarak gösterilir. Veriden tek
+başına "alıcı yok" ile "trafik yok" ayrılamaz; arayüz bunu açıkça yazar. Ölçüm, Türkiye'nin doğusundaki
+bilinen kapsama boşluğunu gerçek veriyle göstermek içindir.
+
+**Güvenlik ve sınırlar.** Sunucu yalnızca GET/HEAD kabul eder, istek başlığı ve gövdesi 8 KB ile,
+istemciden gelen WebSocket mesajı 4 KB ile, istemci sayısı 500 ile sınırlıdır. Yavaş istemci, kuyruğu
+8 mesajı geçince düşürülür; bellek istemci başına sınırlıdır. Varsayılan dinleme adresi `127.0.0.1`'dir;
+HTTPS ve dış erişim Aşama 5'te ters vekil (reverse proxy) ile gelecek.
+
 ### Sorgu alanı ve kota
 
 Sorgu kutusu çokgenin sınırlarından hesaplanır: yaklaşık kuzey 35,70–42,30, doğu 25,40–44,85
@@ -128,11 +174,13 @@ yaklaşıklıktır.
 Ubuntu 24.04:
 
 ```bash
-sudo apt-get install -y cmake ninja-build g++ libcurl4-openssl-dev nlohmann-json3-dev libpqxx-dev libgtest-dev
+sudo apt-get install -y cmake ninja-build g++ libcurl4-openssl-dev nlohmann-json3-dev libpqxx-dev libgtest-dev libboost-dev
 cmake --preset debug
 cmake --build --preset debug
 ctest --preset debug -L unit
 ```
+
+Web arayüzü için Node.js 22: `cd web && npm ci && npm run build` (ayrıntı `web/README.md`).
 
 vcpkg ile: `VCPKG_ROOT` ayarlıyken `cmake --preset vcpkg && cmake --build --preset vcpkg`.
 
@@ -169,6 +217,23 @@ filtrelenmiş anlık görüntüler kaydedilip `sema_replay` ile oynatılır:
 
 Kayıt dosyası yalnızca filtreden geçmiş sivil ve Türkiye içi uçakları içerir; askeri/devlet uçakları
 kayda hiç girmez.
+
+### Canlı harita
+
+```bash
+(cd web && npm ci && npm run build)                         # web/dist
+./build/release/sema_collector --dry-run --serve 8080       # http://127.0.0.1:8080/
+```
+
+OpenSky bilgileri olmadan arayüzü denemek için bir kayıt hızlandırılmış oynatılabilir. Harita bu
+durumda üstte "Kayıttan oynatma" bandı gösterir:
+
+```bash
+./build/release/sema_replay tests/fixtures/replay_synthetic.jsonl --serve 8080 --speed 10 --label "sentetik veri"
+```
+
+Arayüz geliştirirken `cd web && npm run dev` Vite sunucusunu açar ve `/ws` isteklerini 8080'deki
+sunucuya yönlendirir.
 
 Askeri/devlet filtresinin işletici kuralı için OpenSky uçak veritabanı CSV'si
 ([opensky-network.org/datasets/metadata](https://opensky-network.org/datasets/metadata/)) indirilip
@@ -241,9 +306,11 @@ Bu sentetik veride çıkan iki ders, gerçek veriyle doğrulanacak:
   tek bir kuralın eşleşmesi yeterlidir. Filtrenin kendi testleri `tests/test_military_filter.cpp`
   içindedir.
 - **Askeri amaçlı özellik yoktur.** Üs çevresi izleme, askeri bölge vurgulama veya askeri hareketleri
-  çıkarmaya yönelik herhangi bir özellik eklenmez.
+  çıkarmaya yönelik herhangi bir özellik eklenmez. Harita yalnızca filtreden geçmiş sivil uçakları
+  alır: `LiveState` izleyiciyle aynı filtrelenmiş anlık görüntülerle beslenir, askeri/devlet uçağı
+  sunucuya hiç ulaşmaz. Haritada üs, askeri bölge veya benzeri katman yoktur.
 - **Kaynak gösterimi.** Veri OpenSky Network'ten gelir ve OpenSky'ın istediği makale aşağıda
-  gösterilir.
+  gösterilir. Aynı atıf haritanın köşesinde ve "Hakkında" panelinde de yer alır.
 
 ## Kaynaklar
 
@@ -254,7 +321,9 @@ Bu proje [OpenSky Network](https://opensky-network.org) verisini kullanır:
 > In *Proceedings of the 13th IEEE/ACM International Symposium on Information Processing in Sensor
 > Networks (IPSN)*, pages 83–94, April 2014.
 
-Ülke sınırları: [Natural Earth](https://www.naturalearthdata.com) (kamu malı).
+Ülke sınırları: [Natural Earth](https://www.naturalearthdata.com) (kamu malı). Harita altlığı:
+[OpenFreeMap](https://openfreemap.org), © [OpenMapTiles](https://openmaptiles.org),
+© [OpenStreetMap katkıcıları](https://www.openstreetmap.org/copyright).
 
 ## Lisans
 
