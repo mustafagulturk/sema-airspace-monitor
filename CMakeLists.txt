@@ -20,6 +20,8 @@ if(NOT TARGET libpqxx::pqxx)
   add_library(libpqxx::pqxx ALIAS PkgConfig::PQXX)
 endif()
 find_package(Threads REQUIRED)
+# Boost.Beast (header-only) for the live map's HTTP/WebSocket server.
+find_package(Boost 1.81 REQUIRED)
 
 # --- Common compile options -------------------------------------------------
 add_library(sema_options INTERFACE)
@@ -32,6 +34,11 @@ if(SEMA_SANITIZER STREQUAL "address")
   target_link_options(sema_options INTERFACE -fsanitize=address,undefined)
 elseif(SEMA_SANITIZER STREQUAL "thread")
   target_compile_options(sema_options INTERFACE -fsanitize=thread -fno-omit-frame-pointer)
+  # Boost.Asio uses std::atomic_thread_fence, which GCC warns TSan cannot model.
+  # Its fences sit next to real atomics, so TSan still sees the synchronisation.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(sema_options INTERFACE -Wno-tsan)
+  endif()
   target_link_options(sema_options INTERFACE -fsanitize=thread)
 elseif(NOT SEMA_SANITIZER STREQUAL "")
   message(FATAL_ERROR "Unknown SEMA_SANITIZER '${SEMA_SANITIZER}'")
@@ -58,6 +65,8 @@ add_library(sema_core
   src/metrics.cpp
   src/tracker.cpp
   src/snapshot_io.cpp
+  src/live.cpp
+  src/static_files.cpp
 )
 target_include_directories(sema_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -66,11 +75,15 @@ target_link_libraries(sema_core
   PUBLIC nlohmann_json::nlohmann_json Threads::Threads sema_options
   PRIVATE CURL::libcurl libpqxx::pqxx)
 
+# Live map server, kept apart from the core so Beast is compiled once.
+add_library(sema_live src/live_server.cpp)
+target_link_libraries(sema_live PUBLIC sema_core PRIVATE Boost::headers)
+
 add_executable(sema_collector apps/collector.cpp)
-target_link_libraries(sema_collector PRIVATE sema_core)
+target_link_libraries(sema_collector PRIVATE sema_core sema_live)
 
 add_executable(sema_replay apps/replay.cpp)
-target_link_libraries(sema_replay PRIVATE sema_core)
+target_link_libraries(sema_replay PRIVATE sema_core sema_live)
 
 if(SEMA_BUILD_TESTS)
   enable_testing()
