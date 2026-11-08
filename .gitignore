@@ -5,3 +5,8 @@ vcpkg_installed/
 *.swp
 .env
 __pycache__/
+# Real OpenSky recordings, hand-labelled events and generated reports stay
+# local: raw OpenSky data is not redistributed (see README, Etik ve hukuki sınırlar).
+/kayit*.jsonl
+/olaylar*.csv
+/rapor*.md

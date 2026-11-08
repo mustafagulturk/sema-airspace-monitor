@@ -75,6 +75,7 @@ add_library(sema_core
   src/history.cpp
   src/pg_history.cpp
   src/prom_metrics.cpp
+  src/report.cpp
 )
 target_include_directories(sema_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include

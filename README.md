@@ -377,6 +377,24 @@ filtrelenmiş anlık görüntüler kaydedilip `sema_replay` ile oynatılır:
 Kayıt dosyası yalnızca filtreden geçmiş sivil ve Türkiye içi uçakları içerir; askeri/devlet uçakları
 kayda hiç girmez.
 
+### Ölçüm raporu ve olay etiketleme
+
+README'deki ölçüm tabloları elle taşınmaz; aynı kayıttan tek komutla üretilir:
+
+```bash
+# 1. Olayları etiketlemek için CSV'ye dök (son sütun "etiket" boş gelir)
+./build/release/sema_replay kayit.jsonl --events-csv olaylar.csv
+# 2. olaylar.csv'yi bir tablo programında aç, her olaya "gerçek" ya da "yanlış" yaz
+#    (Excel'in noktalı virgüllü CSV'si de okunur; boş bırakılan satır "etiketsiz" sayılır)
+# 3. Raporu üret: kayıt, iz takibi, anomali (tür başına yanlış alarm oranıyla) ve trafik tabloları
+./build/release/sema_replay kayit.jsonl --report rapor.md --labels olaylar.csv
+```
+
+Etiketler olayın türü, adresi ve başlangıç zamanıyla eşlenir; eşikleri `--anomaly` ile değiştirip
+`--events-csv olaylar.csv --labels olaylar.csv` ile yeniden döküldüğünde eski etiketler korunur, yeni
+olaylar boş gelir. Rapor README'ye kopyalanmak için yazıldığından içinde uçak adresi ve çağrı adı
+yoktur; bunlar yalnızca yerelde kalan CSV'dedir. Kayıt, CSV ve rapor dosyaları `.gitignore`'dadır.
+
 ### Canlı harita
 
 ```bash
@@ -566,6 +584,10 @@ Gerçek veriyle ölçüm henüz yapılmadı. Aşağıdaki satır **sentetik** ka
   çıkarılır (`tools/make_airports.py`, `LoadsShippedListWithoutAirBases` testi). Ortak kullanımlı
   meydanlarda da yalnızca sivil hareketler sayılır, çünkü askeri/devlet uçakları istatistikten önce
   atılmıştır. Geçmiş oynatma ve istatistikler aynı filtrelenmiş veriden gelir.
+- **Ham veri yeniden dağıtılmaz.** Gerçek OpenSky kayıtları (`kayit*.jsonl`) ve olay etiketleri
+  yerelde kalır, depoya konmaz (`.gitignore`). Depodaki kayıtlar `tools/` altındaki betiklerle üretilmiş
+  sentetik verilerdir. README'ye yalnızca toplu sayılar girer; `sema_replay --report` çıktısında uçak
+  adresi ve çağrı adı bulunmaz, çünkü özel bir uçağın olayı bir kişiyi işaret edebilir.
 - **Kaynak gösterimi.** Veri OpenSky Network'ten gelir ve OpenSky'ın istediği makale aşağıda
   gösterilir. Aynı atıf haritanın köşesinde ve "Hakkında" panelinde de yer alır.
 
