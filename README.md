@@ -1,6 +1,7 @@
 # Semâ — Canlı Türkiye Hava Sahası İzleme
 
 [![CI](https://github.com/mustafagulturk/sema-airspace-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/mustafagulturk/sema-airspace-monitor/actions/workflows/ci.yml)
+[![Soak](https://github.com/mustafagulturk/sema-airspace-monitor/actions/workflows/soak.yml/badge.svg)](https://github.com/mustafagulturk/sema-airspace-monitor/actions/workflows/soak.yml)
 
 Semâ, Türkiye üzerindeki gerçek **sivil** uçak trafiğini [OpenSky Network](https://opensky-network.org)'ün
 ücretsiz verisiyle canlı izleyen bir C++20 sistemidir. Simülasyon yoktur, her şey gerçek veriyle çalışır.
@@ -395,6 +396,25 @@ Etiketler olayın türü, adresi ve başlangıç zamanıyla eşlenir; eşikleri 
 olaylar boş gelir. Rapor README'ye kopyalanmak için yazıldığından içinde uçak adresi ve çağrı adı
 yoktur; bunlar yalnızca yerelde kalan CSV'dedir. Kayıt, CSV ve rapor dosyaları `.gitignore`'dadır.
 
+### Uzun süreli bellek testi
+
+`sema_soak` bir kaydı zamanda ileri kaydırarak tekrar tekrar oynatır ve toplayıcının bellekteki işlem
+hattını (izleyici, anomali dedektörü, uçuş günlüğü, geçmiş, canlı harita durumu, Prometheus kaydı;
+saatte bir de geçmiş, istatistik ve `/metrics` çıktısı) haftalarca çalıştırır. Bütün kayan pencereler
+(24 saatlik kapsama ve geçmiş, 31 günlük uçuş listesi) dolduktan sonra yerleşik bellek (RSS) artmaya
+devam ederse başarısız olur:
+
+```bash
+./build/release/sema_soak tests/fixtures/replay_synthetic.jsonl --days 60 --csv soak.csv
+# ASan ile: sızıntı varsa LeakSanitizer çıkışta raporlar
+./build/asan/sema_soak tests/fixtures/anomaly_synthetic.jsonl --days 3 --keep-flights-days 1 --warmup-days 2 --max-growth-mb 64
+```
+
+GitHub Actions'taki `Soak` işi bunu her pazartesi (Release'te 60 gün, ASan'da 3 gün) ve çekirdeğe
+dokunan her PR'da çalıştırır; saatlik RSS değerleri CSV olarak saklanır. Gerçek kayıtla da çalışır
+(`sema_soak kayit.jsonl`). Bu test, yayındaki sistemin RSS eğiliminin (Grafana) yerini tutmaz, onu
+tamamlar: sızıntı varsa yayına çıkmadan yakalanır.
+
 ### Canlı harita
 
 ```bash
@@ -558,6 +578,23 @@ Gerçek veriyle ölçüm henüz yapılmadı. Aşağıdaki satır **sentetik** ka
 | En yoğun saatler (TSİ) | henüz ölçülmedi |
 | En yoğun havalimanları ve koridorlar | henüz ölçülmedi |
 | Kesintisiz çalışma, bellek (RSS) eğilimi | henüz ölçülmedi |
+
+### Uzun süreli bellek testi
+
+Aşağıdaki satırlar **sentetik** kayıtların `sema_soak` ile döngüde oynatılmasından gelir (Release,
+GCC 13); yayındaki sistemin kesintisiz çalışma süresi ve RSS eğilimi Grafana'dan eklenecek.
+
+| Koşu (sentetik) | Simüle süre | RSS: pencereler dolunca → sonraki tepe | Eğilim | ASan/LSan |
+|---|---|---|---|---|
+| `replay_synthetic.jsonl`, toplayıcının pencereleri | 60 gün (57.934 anlık görüntü, 27 s) | 24,7 MB → 26,7 MB (+2,0 MB) | +0,06 MB/gün | — |
+| `anomaly_synthetic.jsonl`, 3 günlük uçuş penceresi | 14 gün (13.450 anlık görüntü, 6 s) | 14,4 MB → 17,0 MB (+2,6 MB) | +0,12 MB/gün | — |
+| `anomaly_synthetic.jsonl`, ASan | 3 gün | sızıntı yok | — | temiz |
+
+120 günlük koşuda izlenen konum ve uçuş sayıları 32. günden sonra sabittir (~21.400 konum, ~15.700
+uçuş); RSS 40. günde 26,4 MB, 70. günde 29,2 MB, 110. günde 29,5 MB'tır. Aradaki basamaklar büyük
+olasılıkla ölçüm dağılımlarının örnek havuzlarının dolmasıdır: her `Distribution` en çok 100.000 örnek
+tutar ve anlık görüntü başına ölçülenler bu sınıra ~80 günde ulaşır. Sınırlı oldukları için bellek
+sonra yerinde sayar.
 
 ## Etik ve hukuki sınırlar
 
