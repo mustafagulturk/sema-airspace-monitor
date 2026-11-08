@@ -27,6 +27,12 @@
 //                   --anomaly descent_min_rate_ms=18; --anomaly list prints the names
 //   --stats         print traffic statistics (flights, busiest hours, airports,
 //                   routes, corridors) for the whole recording as JSON
+//   --report FILE   write a Markdown measurement report (recording, tracking,
+//                   anomaly and traffic tables in the README's format) to FILE
+//   --events-csv FILE  write every anomaly event to FILE with an empty
+//                   "etiket" column to label by hand (gerçek / yanlış)
+//   --labels FILE   a labelled events CSV; the report then shows the false-alarm
+//                   rate per kind, and --events-csv keeps the labels
 //
 // With --serve the whole recording is also loaded into memory first, so the
 // map's "Geçmiş" (replay any range) and "İstatistik" views work at once.
@@ -41,6 +47,7 @@
 #include <ctime>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -60,6 +67,7 @@
 #include "sema/history.hpp"
 #include "sema/live.hpp"
 #include "sema/live_server.hpp"
+#include "sema/report.hpp"
 #include "sema/snapshot_io.hpp"
 #include "sema/tracker.hpp"
 #include "sema/traffic_stats.hpp"
@@ -76,6 +84,9 @@ struct Options {
     std::optional<long> loss_min_coverage;
     std::vector<std::pair<std::string, double>> anomaly_params;
     bool stats = false;
+    std::string report;
+    std::string events_csv;
+    std::string labels;
     std::optional<double> accel_psd;
     std::optional<double> turn_psd;
     std::optional<double> ct_accel_psd;
@@ -88,7 +99,7 @@ struct Options {
 
 [[noreturn]] void usage(int code) {
     std::cerr << "usage: sema_replay <recording.jsonl> [--data-dir DIR] [--no-area] [--accel-psd Q] [--ct-accel-psd Q] [--turn-psd Q] [--json] "
-                 "[--snapshots] [--stats] [--events [--loss-min-coverage N] [--anomaly NAME=V]...] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] "
+                 "[--snapshots] [--stats] [--report FILE] [--events-csv FILE] [--labels FILE] [--events [--loss-min-coverage N] [--anomaly NAME=V]...] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] "
                  "[--web-root DIR]]\n";
     std::exit(code);
 }
@@ -144,6 +155,12 @@ Options parse(int argc, char** argv) {
             o.snapshots = true;
         } else if (a == "--stats") {
             o.stats = true;
+        } else if (a == "--report") {
+            o.report = value();
+        } else if (a == "--events-csv") {
+            o.events_csv = value();
+        } else if (a == "--labels") {
+            o.labels = value();
         } else if (a == "-h" || a == "--help") {
             usage(0);
         } else if (!a.empty() && a[0] != '-' && o.input.empty()) {
@@ -276,6 +293,13 @@ int run(const Options& o) {
     const auto airports = load_airports(std::filesystem::path(o.data_dir) / "airports_tr.json");
     sema::FlightLog flight_log(airports.get());
     std::vector<sema::FlightRecord> flights;
+    sema::RecordingSummary recording;
+    std::optional<sema::EventLabels> labels;
+    if (!o.labels.empty()) {
+        std::ifstream in(o.labels, std::ios::binary);
+        if (!in) throw std::runtime_error("cannot open " + o.labels);
+        labels = sema::read_event_labels_csv(in);
+    }
 
     // Live map. Signals are blocked before the server thread starts and are
     // then waited for with sigtimedwait, which doubles as the pacing sleep.
@@ -332,6 +356,7 @@ int run(const Options& o) {
                 break;
             }
         }
+        recording.add(*snap);
         const auto r = tracker.process(*snap);
         const auto ev = detector.process(*snap, tracker, r);
         finished.insert(finished.end(), ev.closed.begin(), ev.closed.end());
@@ -364,7 +389,8 @@ int run(const Options& o) {
     }
     if (server) server->stop();
     for (const auto& e : detector.active()) finished.push_back(e);  // still open at the end
-    if (o.stats) {
+    std::optional<nlohmann::json> stats;
+    if (o.stats || !o.report.empty()) {
         for (auto& f : flight_log.flush()) flights.push_back(std::move(f));
         sema::StatsQuery q;
         q.from = flights.empty() ? 0.0 : flights.front().first_seen;
@@ -373,11 +399,36 @@ int run(const Options& o) {
             q.from = std::min(q.from, f.first_seen);
             q.to = std::max(q.to, f.first_seen + 1.0);
         }
-        auto j = sema::compute_traffic_stats(flights, *airports, q);
-        j["corridors"]["cells"] = nlohmann::json::array();  // long; the map shows them
-        std::cout << j.dump(2) << '\n';
+        stats = sema::compute_traffic_stats(flights, *airports, q);
+        (*stats)["corridors"]["cells"] = nlohmann::json::array();  // long; the map shows them
+    }
+    if (!o.events_csv.empty()) {
+        std::ofstream out(o.events_csv, std::ios::binary);
+        if (!out) throw std::runtime_error("cannot write " + o.events_csv);
+        sema::write_events_csv(out, finished, labels ? &*labels : nullptr);
+        std::cerr << "sema_replay: " << finished.size() << " events written to " << o.events_csv << '\n';
+    }
+    if (!o.report.empty()) {
+        sema::ReportInput in;
+        in.recording_name = std::filesystem::path(o.input).filename().string();
+        in.generated_at_utc = utc(static_cast<double>(std::time(nullptr))).substr(0, 16);
+        in.recording = &recording;
+        in.tracker = &tracker.metrics();
+        in.anomalies = &detector.metrics();
+        in.events = &finished;
+        in.labels = labels ? &*labels : nullptr;
+        in.stats = &*stats;
+        std::ofstream out(o.report, std::ios::binary);
+        if (!out) throw std::runtime_error("cannot write " + o.report);
+        out << sema::render_report_markdown(in);
+        std::cerr << "sema_replay: report written to " << o.report << '\n';
+    }
+    if (o.stats) {
+        std::cout << stats->dump(2) << '\n';
         return 0;
     }
+    // Files only, unless the console output was asked for too.
+    if ((!o.report.empty() || !o.events_csv.empty()) && !o.json && !o.events) return 0;
     if (o.json) {
         auto j = tracker.metrics().to_json();
         if (o.events) {

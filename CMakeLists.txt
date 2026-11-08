@@ -75,6 +75,7 @@ add_library(sema_core
   src/history.cpp
   src/pg_history.cpp
   src/prom_metrics.cpp
+  src/report.cpp
 )
 target_include_directories(sema_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -92,6 +93,9 @@ target_link_libraries(sema_collector PRIVATE sema_core sema_live)
 
 add_executable(sema_replay apps/replay.cpp)
 target_link_libraries(sema_replay PRIVATE sema_core sema_live)
+
+add_executable(sema_soak apps/soak.cpp)
+target_link_libraries(sema_soak PRIVATE sema_core)
 
 if(SEMA_BUILD_TESTS)
   enable_testing()

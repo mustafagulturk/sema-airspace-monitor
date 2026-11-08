@@ -1,6 +1,7 @@
 # Semâ — Canlı Türkiye Hava Sahası İzleme
 
 [![CI](https://github.com/mustafagulturk/sema-airspace-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/mustafagulturk/sema-airspace-monitor/actions/workflows/ci.yml)
+[![Soak](https://github.com/mustafagulturk/sema-airspace-monitor/actions/workflows/soak.yml/badge.svg)](https://github.com/mustafagulturk/sema-airspace-monitor/actions/workflows/soak.yml)
 
 Semâ, Türkiye üzerindeki gerçek **sivil** uçak trafiğini [OpenSky Network](https://opensky-network.org)'ün
 ücretsiz verisiyle canlı izleyen bir C++20 sistemidir. Simülasyon yoktur, her şey gerçek veriyle çalışır.
@@ -32,6 +33,24 @@ errors, memory and an unbroken-collection streak to Prometheus/Grafana; a multi-
 and one Compose file run PostGIS, the collector, Caddy (automatic HTTPS), Prometheus and Grafana on
 a single VPS. Non-commercial, see *Ethical and legal
 > limits* below.
+
+## Ekran görüntüleri
+
+> Bütün görüntüler **sentetik** bir kaydın tekrar oynatılmasıdır (`tests/fixtures/anomaly_synthetic.jsonl`,
+> üstteki "sentetik veri" şeridi); uçaklar, adresler ve çağrı adları uydurmadır. Gerçek OpenSky
+> verisinden görüntü yayımlanmaz. Altlık harita bu görüntülerde yüklenmemiştir, yalnızca Türkiye sınırı
+> ve uçaklar görünür.
+
+![Haritada uçaklar raporlar arasında Kalman tahminiyle akıyor](docs/img/demo.gif)
+
+| Olay ayrıntısı (bekleme) | İstatistik | Telefon |
+|---|---|---|
+| ![Olay ayrıntısı](docs/img/olay-ayrinti.png) | ![İstatistik paneli ve koridor ısı haritası](docs/img/istatistik.png) | ![Telefonda harita](docs/img/telefon.png) |
+
+Görüntüler `tools/demo/capture.cjs` ile yeniden üretilir (sentetik kayıtla `sema_replay --serve`
+çalışırken; betik "sentetik veri" etiketi yoksa durur). Sitenin bağlantı önizlemesi (`web/public/og.png`,
+LinkedIn/WhatsApp kartı) aynı sentetik görüntüden kırpılır; yayında mutlak adres için `.env`'deki
+`SEMA_DOMAIN` imaj derlenirken kullanılır.
 
 ## Durum
 
@@ -377,6 +396,43 @@ filtrelenmiş anlık görüntüler kaydedilip `sema_replay` ile oynatılır:
 Kayıt dosyası yalnızca filtreden geçmiş sivil ve Türkiye içi uçakları içerir; askeri/devlet uçakları
 kayda hiç girmez.
 
+### Ölçüm raporu ve olay etiketleme
+
+README'deki ölçüm tabloları elle taşınmaz; aynı kayıttan tek komutla üretilir:
+
+```bash
+# 1. Olayları etiketlemek için CSV'ye dök (son sütun "etiket" boş gelir)
+./build/release/sema_replay kayit.jsonl --events-csv olaylar.csv
+# 2. olaylar.csv'yi bir tablo programında aç, her olaya "gerçek" ya da "yanlış" yaz
+#    (Excel'in noktalı virgüllü CSV'si de okunur; boş bırakılan satır "etiketsiz" sayılır)
+# 3. Raporu üret: kayıt, iz takibi, anomali (tür başına yanlış alarm oranıyla) ve trafik tabloları
+./build/release/sema_replay kayit.jsonl --report rapor.md --labels olaylar.csv
+```
+
+Etiketler olayın türü, adresi ve başlangıç zamanıyla eşlenir; eşikleri `--anomaly` ile değiştirip
+`--events-csv olaylar.csv --labels olaylar.csv` ile yeniden döküldüğünde eski etiketler korunur, yeni
+olaylar boş gelir. Rapor README'ye kopyalanmak için yazıldığından içinde uçak adresi ve çağrı adı
+yoktur; bunlar yalnızca yerelde kalan CSV'dedir. Kayıt, CSV ve rapor dosyaları `.gitignore`'dadır.
+
+### Uzun süreli bellek testi
+
+`sema_soak` bir kaydı zamanda ileri kaydırarak tekrar tekrar oynatır ve toplayıcının bellekteki işlem
+hattını (izleyici, anomali dedektörü, uçuş günlüğü, geçmiş, canlı harita durumu, Prometheus kaydı;
+saatte bir de geçmiş, istatistik ve `/metrics` çıktısı) haftalarca çalıştırır. Bütün kayan pencereler
+(24 saatlik kapsama ve geçmiş, 31 günlük uçuş listesi) dolduktan sonra yerleşik bellek (RSS) artmaya
+devam ederse başarısız olur:
+
+```bash
+./build/release/sema_soak tests/fixtures/replay_synthetic.jsonl --days 60 --csv soak.csv
+# ASan ile: sızıntı varsa LeakSanitizer çıkışta raporlar
+./build/asan/sema_soak tests/fixtures/anomaly_synthetic.jsonl --days 3 --keep-flights-days 1 --warmup-days 2 --max-growth-mb 64
+```
+
+GitHub Actions'taki `Soak` işi bunu her pazartesi (Release'te 60 gün, ASan'da 3 gün) ve çekirdeğe
+dokunan her PR'da çalıştırır; saatlik RSS değerleri CSV olarak saklanır. Gerçek kayıtla da çalışır
+(`sema_soak kayit.jsonl`). Bu test, yayındaki sistemin RSS eğiliminin (Grafana) yerini tutmaz, onu
+tamamlar: sızıntı varsa yayına çıkmadan yakalanır.
+
 ### Canlı harita
 
 ```bash
@@ -541,6 +597,23 @@ Gerçek veriyle ölçüm henüz yapılmadı. Aşağıdaki satır **sentetik** ka
 | En yoğun havalimanları ve koridorlar | henüz ölçülmedi |
 | Kesintisiz çalışma, bellek (RSS) eğilimi | henüz ölçülmedi |
 
+### Uzun süreli bellek testi
+
+Aşağıdaki satırlar **sentetik** kayıtların `sema_soak` ile döngüde oynatılmasından gelir (Release,
+GCC 13); yayındaki sistemin kesintisiz çalışma süresi ve RSS eğilimi Grafana'dan eklenecek.
+
+| Koşu (sentetik) | Simüle süre | RSS: pencereler dolunca → sonraki tepe | Eğilim | ASan/LSan |
+|---|---|---|---|---|
+| `replay_synthetic.jsonl`, toplayıcının pencereleri | 60 gün (57.934 anlık görüntü, 27 s) | 24,7 MB → 26,7 MB (+2,0 MB) | +0,06 MB/gün | — |
+| `anomaly_synthetic.jsonl`, 3 günlük uçuş penceresi | 14 gün (13.450 anlık görüntü, 6 s) | 14,4 MB → 17,0 MB (+2,6 MB) | +0,12 MB/gün | — |
+| `anomaly_synthetic.jsonl`, ASan | 3 gün | sızıntı yok | — | temiz |
+
+120 günlük koşuda izlenen konum ve uçuş sayıları 32. günden sonra sabittir (~21.400 konum, ~15.700
+uçuş); RSS 40. günde 26,4 MB, 70. günde 29,2 MB, 110. günde 29,5 MB'tır. Aradaki basamaklar büyük
+olasılıkla ölçüm dağılımlarının örnek havuzlarının dolmasıdır: her `Distribution` en çok 100.000 örnek
+tutar ve anlık görüntü başına ölçülenler bu sınıra ~80 günde ulaşır. Sınırlı oldukları için bellek
+sonra yerinde sayar.
+
 ## Etik ve hukuki sınırlar
 
 - **Ticari olmayan kullanım.** OpenSky verisi yalnızca ticari olmayan amaçla kullanılır. Sitede reklam
@@ -566,6 +639,10 @@ Gerçek veriyle ölçüm henüz yapılmadı. Aşağıdaki satır **sentetik** ka
   çıkarılır (`tools/make_airports.py`, `LoadsShippedListWithoutAirBases` testi). Ortak kullanımlı
   meydanlarda da yalnızca sivil hareketler sayılır, çünkü askeri/devlet uçakları istatistikten önce
   atılmıştır. Geçmiş oynatma ve istatistikler aynı filtrelenmiş veriden gelir.
+- **Ham veri yeniden dağıtılmaz.** Gerçek OpenSky kayıtları (`kayit*.jsonl`) ve olay etiketleri
+  yerelde kalır, depoya konmaz (`.gitignore`). Depodaki kayıtlar `tools/` altındaki betiklerle üretilmiş
+  sentetik verilerdir. README'ye yalnızca toplu sayılar girer; `sema_replay --report` çıktısında uçak
+  adresi ve çağrı adı bulunmaz, çünkü özel bir uçağın olayı bir kişiyi işaret edebilir.
 - **Kaynak gösterimi.** Veri OpenSky Network'ten gelir ve OpenSky'ın istediği makale aşağıda
   gösterilir. Aynı atıf haritanın köşesinde ve "Hakkında" panelinde de yer alır.
 
