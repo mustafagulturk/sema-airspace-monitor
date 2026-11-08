@@ -238,6 +238,83 @@ body.panel-open .maplibregl-ctrl-top-right { display: none; }
 .about h3 { margin: 14px 0 4px; font-size: 15px; }
 .about p { margin: 8px 0; }
 
+/* ---- mode switch ---- */
+.modes { display: flex; gap: 0; flex: none; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.modes .btn { border: 0; border-radius: 0; min-height: 36px; padding: 0 12px; background: var(--btn-bg); }
+.modes .btn + .btn { border-left: 1px solid var(--border); }
+.modes .btn[aria-pressed="true"] { background: var(--btn-on); color: var(--btn-on-fg); }
+
+/* ---- history bar ---- */
+.hbar {
+  position: fixed;
+  z-index: 7;
+  left: calc(10px + var(--safe-l));
+  right: calc(10px + var(--safe-r));
+  bottom: calc(30px + var(--safe-b));
+  margin: 0 auto;
+  max-width: 760px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.field { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.hbar input[type="datetime-local"], .hbar select {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  padding: 0 6px;
+}
+.h-seek { flex: 1 1 160px; min-width: 120px; accent-color: var(--accent); height: 28px; }
+.h-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.h-info { flex: 1 1 auto; min-width: 0; }
+.h-info.err { color: var(--bad); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+body.history-on .legends { bottom: calc(132px + var(--safe-b)); }
+
+/* ---- statistics panel (left side on desktop) ---- */
+.stats { left: calc(10px + var(--safe-l)); right: auto; width: 380px; }
+body.stats-on .legends { display: none; }
+.stats h3 { margin: 16px 0 6px; font-size: 14px; }
+.seg { display: flex; gap: 6px; margin: 10px 0 4px; }
+.seg .btn { min-height: 34px; flex: 1; font-size: 13px; }
+.note { margin: 8px 0; padding: 6px 10px; border-radius: 8px; background: #fff3bf; color: #5c3c00; font-size: 13px; }
+.note.err { background: #ffe3e3; color: #7d1a1a; }
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 10px; }
+.kpi { border: 1px solid var(--border); border-radius: 10px; padding: 6px 6px 5px; text-align: center; }
+.kpi-v { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.kpi-l { font-size: 11px; color: var(--muted); line-height: 1.2; }
+.chart-box { width: 100%; }
+.chart { display: block; width: 100%; height: 120px; overflow: visible; }
+.chart-bar { fill: var(--accent); opacity: 0.8; }
+.chart-bar.hi { opacity: 1; }
+.chart-hit { fill: transparent; }
+.chart-col:hover .chart-bar { opacity: 1; }
+.chart-col:hover .chart-hit { fill: var(--border); }
+.chart-grid { stroke: var(--border); stroke-dasharray: 2 3; }
+.chart-base { stroke: var(--muted); stroke-width: 1; }
+.chart-axis { fill: var(--muted); font-size: 10px; }
+.chart-value { fill: var(--fg); font-size: 11px; font-weight: 700; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.tbl th + th, .tbl td + td { text-align: right; padding-left: 8px; }
+.tbl td { padding: 4px 0; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl td.empty { color: var(--muted); text-align: left; }
+.corridor-row { display: flex; align-items: center; gap: 10px; }
+.corridor-legend { flex: 1; }
+.method summary { cursor: pointer; color: var(--accent); }
+.method p { margin: 6px 0; }
+.uptime { margin: 12px 0 0; }
+
 /* ---- narrow screens: bottom sheet ---- */
 @media (max-width: 640px) {
   :root { --topbar-h: 50px; }
@@ -257,6 +334,30 @@ body.panel-open .maplibregl-ctrl-top-right { display: none; }
     border-bottom: 0;
     padding: 6px 16px calc(10px + var(--safe-b));
   }
+  /* Mode switch gets its own row under the brand and status. */
+  :root { --topbar-h: 94px; }
+  .topbar { flex-wrap: wrap; row-gap: 4px; padding-bottom: 6px; }
+  .status { flex: 1 1 0; }
+  .modes { order: 5; width: 100%; }
+  .modes .btn { flex: 1; min-height: 34px; }
+  .stats {
+    top: auto;
+    left: var(--safe-l);
+    right: var(--safe-r);
+    bottom: 0;
+    width: auto;
+    max-height: 70dvh;
+    border-radius: 16px 16px 0 0;
+    border-bottom: 0;
+    padding: 6px 16px calc(12px + var(--safe-b));
+  }
+  body.panel-open .stats { display: none; }
+  .kpi-v { font-size: 16px; }
+  .hbar { left: var(--safe-l); right: var(--safe-r); bottom: 0; border-radius: 14px 14px 0 0; padding-bottom: calc(8px + var(--safe-b)); }
+  .hbar .field { font-size: 12px; }
+  .hbar input[type="datetime-local"] { max-width: 170px; }
+  body.history-on .legends, body.history-on .maplibregl-ctrl-bottom-left, body.history-on .maplibregl-ctrl-bottom-right { display: none; }
+  body.history-on.panel-open .hbar { display: none; }
   .panel-grip { display: block; width: 36px; height: 4px; border-radius: 2px; background: var(--border); margin: 0 auto 4px; }
   .panel-head h2 { font-size: 17px; margin: 0; }
   .panel-head .muted { font-size: 12px; }

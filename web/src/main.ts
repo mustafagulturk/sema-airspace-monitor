@@ -9,9 +9,20 @@ import { Feed, feedUrl, type ConnectionState } from "./feed";
 import { ServerClock, extrapolate } from "./motion";
 import { buildFrame, geojsonBounds } from "./features";
 import { coverageToGeoJSON } from "./coverage";
+import { fetchReplay, fetchStats, fetchStatus, type StatsResponse, type StatusResponse } from "./api";
+import {
+  formatDuration,
+  formatLocalTime,
+  fromLocalInput,
+  Playback,
+  ReplayData,
+  toLocalInput,
+} from "./replay";
+import { airportLabel, barChartSvg, corridorsToGeoJSON, dailyBars, hourBars } from "./stats";
 import {
   addOverlays,
   altitudeGradientCss,
+  corridorGradientCss,
   coverageGradientCss,
   DEFAULT_STYLE_URL,
   FALLBACK_STYLE,
@@ -50,6 +61,9 @@ import {
 } from "./events";
 
 const TICK_MS = 250;
+/** Faster ticks while replaying history, where time runs 10-120x. */
+const HISTORY_TICK_MS = 100;
+const DEFAULT_UTC_OFFSET_S = 3 * 3600;
 /** Data older than this (server seconds) marks the feed as stale. */
 const STALE_AFTER_S = 150;
 const ENDED_CLOSE_MS = 2500;
@@ -81,6 +95,17 @@ let eventsMsg: EventsMessage | null = null;
 let eventsOpen = false;
 /** Key of the event shown in detail, and the last copy of it (kept if it drops off the list). */
 let selectedEvent: AnomalyEvent | null = null;
+
+type Mode = "live" | "history" | "stats";
+let mode: Mode = "live";
+let status: StatusResponse | null = null;
+let replayData: ReplayData | null = null;
+let playback: Playback | null = null;
+let replayAbort: AbortController | null = null;
+let stats: StatsResponse | null = null;
+let statsRange = 604800;
+let statsAbort: AbortController | null = null;
+let corridorsOn = true;
 
 // ---------------------------------------------------------------- elements
 const el = {
@@ -129,20 +154,65 @@ const el = {
   evdSummary: $("evd-summary"),
   evdFacts: $("evd-facts"),
   evdAircraft: $("evd-aircraft") as HTMLButtonElement,
+  aboutUptime: $("about-uptime"),
+  modeLive: $("mode-live") as HTMLButtonElement,
+  modeHistory: $("mode-history") as HTMLButtonElement,
+  modeStats: $("mode-stats") as HTMLButtonElement,
+  hbar: $("history-bar"),
+  hStart: $("h-start") as HTMLInputElement,
+  hDur: $("h-dur") as HTMLSelectElement,
+  hLoad: $("h-load") as HTMLButtonElement,
+  hInfo: $("h-info"),
+  hPlay: $("h-play") as HTMLButtonElement,
+  hSeek: $("h-seek") as HTMLInputElement,
+  hSpeed: $("h-speed") as HTMLSelectElement,
+  hTime: $("h-time"),
+  stats: $("stats"),
+  statsClose: $("stats-close") as HTMLButtonElement,
+  sSub: $("s-sub"),
+  sNote: $("s-note"),
+  sBody: $("s-body"),
+  kFlights: $("k-flights"),
+  kAircraft: $("k-aircraft"),
+  kPerDay: $("k-perday"),
+  kPeak: $("k-peak"),
+  sDaily: $("s-daily"),
+  sHours: $("s-hours"),
+  sAirports: document.querySelector("#s-airports tbody") as HTMLTableSectionElement,
+  sRoutes: document.querySelector("#s-routes tbody") as HTMLTableSectionElement,
+  sUptime: $("s-uptime"),
+  btnCorridors: $("btn-corridors") as HTMLButtonElement,
+  corrMax: $("corr-max"),
 };
 $("alt-bar").style.background = altitudeGradientCss();
 $("cov-bar").style.background = coverageGradientCss();
+$("corr-bar").style.background = corridorGradientCss();
 
 function serverNow(): number {
   return clock.now(performance.now());
 }
 
+/** Time the map shows: the replay clock in history mode, else the server's. */
+function viewNow(): number {
+  return mode === "history" && playback ? playback.now(performance.now()) : serverNow();
+}
+
+function utcOffset(): number {
+  return status?.utc_offset_s ?? DEFAULT_UTC_OFFSET_S;
+}
+
 // ---------------------------------------------------------------- status bar
 function renderStatus(): void {
+  if (mode === "history") {
+    setText(el.count, playback ? `${fmtInt(byIcao.size)} uçak` : "— uçak");
+    setText(el.age, playback ? formatLocalTime(viewNow(), utcOffset()) : "geçmiş");
+  }
   const now = serverNow();
   const age = snapshot && clock.synced ? now - snapshot.data_time : Number.NaN;
-  setText(el.count, snapshot ? `${fmtInt(snapshot.counts.tracked)} uçak` : "— uçak");
-  setText(el.age, Number.isFinite(age) ? `son veri ${formatAgo(age)}` : "");
+  if (mode !== "history") {
+    setText(el.count, snapshot ? `${fmtInt(snapshot.counts.tracked)} uçak` : "— uçak");
+    setText(el.age, Number.isFinite(age) ? `son veri ${formatAgo(age)}` : "");
+  }
   let connText: string;
   switch (conn) {
     case "connecting":
@@ -170,7 +240,7 @@ function renderPanel(): void {
   if (selected === null) return;
   const a = byIcao.get(selected);
   if (!a) return;
-  const now = serverNow();
+  const now = viewNow();
   const p = extrapolate(a, now);
   setText(el.pTitle, displayName(a.callsign, a.icao24));
   setText(el.pSub, a.callsign.trim() ? a.icao24.toUpperCase() : "Çağrı kodu yok");
@@ -212,7 +282,7 @@ function openPanel(icao24: string): void {
 function keepSelectedVisible(): void {
   const a = selected !== null ? byIcao.get(selected) : undefined;
   if (!mapRef || !a || !window.matchMedia("(max-width: 640px)").matches) return;
-  const p = extrapolate(a, serverNow());
+  const p = extrapolate(a, viewNow());
   const pt = mapRef.project([p.lon, p.lat]);
   const sheetTop = el.panel.getBoundingClientRect().top;
   const topbar = 60;
@@ -359,6 +429,8 @@ function selectEvent(e: AnomalyEvent): void {
 }
 
 function openEvents(): void {
+  // Events belong to the live picture.
+  if (mode !== "live") setMode("live");
   if (isNarrow() && selected !== null) closePanel();
   eventsOpen = true;
   el.events.hidden = false;
@@ -444,6 +516,7 @@ function onCoverage(m: CoverageMessage): void {
 function onSnapshot(m: SnapshotMessage, recvAt: number): void {
   snapshot = m;
   clock.sync(m.clock.time, m.clock.rate, recvAt);
+  if (mode === "history") return; // the map shows the replay
   byIcao = new Map(m.aircraft.map((a) => [a.icao24, a]));
   if (selected !== null) {
     if (byIcao.has(selected)) {
@@ -494,6 +567,10 @@ const feed = new Feed(feedUrl(window.location), {
 
 // ---------------------------------------------------------------- tick loop
 function update(): void {
+  if (mode === "history") {
+    updateHistory();
+    return;
+  }
   renderStatus();
   if (!snapshot || !clock.synced) return;
   const now = serverNow();
@@ -503,7 +580,11 @@ function update(): void {
 
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 function startTicking(): void {
-  if (tickTimer === null) tickTimer = setInterval(update, TICK_MS);
+  if (tickTimer === null) tickTimer = setInterval(update, mode === "history" ? HISTORY_TICK_MS : TICK_MS);
+}
+function restartTicking(): void {
+  stopTicking();
+  if (document.visibilityState === "visible") startTicking();
 }
 function stopTicking(): void {
   if (tickTimer !== null) clearInterval(tickTimer);
@@ -551,6 +632,8 @@ async function initMap(): Promise<void> {
     overlays.setCoverageVisible(coverageOn);
     applyCoverage();
     if (selectedEvent) overlays.setEvent(eventGeometry(selectedEvent));
+    if (stats) overlays.setCorridors(corridorsToGeoJSON(stats));
+    overlays.setCorridorsVisible(mode === "stats" && corridorsOn);
     update();
     void loadBoundary(map);
   });
@@ -605,6 +688,286 @@ async function loadBoundary(map: maplibregl.Map): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- modes
+function setMode(next: Mode): void {
+  if (next === mode) return;
+  const prev = mode;
+  mode = next;
+  el.modeLive.setAttribute("aria-pressed", String(next === "live"));
+  el.modeHistory.setAttribute("aria-pressed", String(next === "history"));
+  el.modeStats.setAttribute("aria-pressed", String(next === "stats"));
+  document.body.classList.toggle("history-on", next === "history");
+  document.body.classList.toggle("stats-on", next === "stats");
+  el.hbar.hidden = next !== "history";
+  el.stats.hidden = next !== "stats";
+  overlays?.setCorridorsVisible(next === "stats" && corridorsOn);
+  if (selected !== null) closePanel();
+  if (next !== "live" && eventsOpen) closeEvents();
+  if (prev === "history") {
+    // Back to the live picture.
+    playback?.pause(performance.now());
+    if (snapshot) byIcao = new Map(snapshot.aircraft.map((a) => [a.icao24, a]));
+  }
+  if (next === "history") {
+    byIcao = new Map();
+    void enterHistory();
+  }
+  if (next === "stats") void loadStats();
+  document.title =
+    next === "history" ? "Semâ — Geçmiş" : next === "stats" ? "Semâ — İstatistik" : hello?.source === "replay" ? "Semâ — Kayıttan oynatma" : "Semâ — Canlı Türkiye Hava Sahası";
+  restartTicking();
+  update();
+}
+
+el.modeLive.addEventListener("click", () => setMode("live"));
+el.modeHistory.addEventListener("click", () => setMode("history"));
+el.modeStats.addEventListener("click", () => setMode("stats"));
+el.statsClose.addEventListener("click", () => setMode("live"));
+
+async function refreshStatus(): Promise<StatusResponse | null> {
+  try {
+    status = await fetchStatus();
+  } catch {
+    return status;
+  }
+  const streak = status.streak;
+  const text = streak
+    ? `Kesintisiz veri toplama: ${formatDuration(streak.seconds)} (15 dakikadan uzun ara yok).`
+    : "Kesintisiz çalışma süresi henüz yok.";
+  setText(el.aboutUptime, text);
+  setText(el.sUptime, text);
+  return status;
+}
+
+// ---------------------------------------------------------------- history (replay a chosen range)
+function setHistoryInfo(text: string, error = false): void {
+  setText(el.hInfo, text);
+  el.hInfo.classList.toggle("err", error);
+}
+
+async function enterHistory(): Promise<void> {
+  const st = await refreshStatus();
+  if (mode !== "history") return;
+  if (!st) {
+    setHistoryInfo("Sunucuya ulaşılamadı.", true);
+    return;
+  }
+  if (!st.history) {
+    setHistoryInfo("Henüz kayıtlı veri yok.", true);
+    el.hLoad.disabled = true;
+    return;
+  }
+  el.hLoad.disabled = false;
+  const off = utcOffset();
+  const { from, to } = st.history;
+  el.hStart.min = toLocalInput(from, off);
+  el.hStart.max = toLocalInput(to, off);
+  for (const o of Array.from(el.hDur.options)) o.disabled = Number(o.value) > st.max_replay_s;
+  if (!el.hStart.value) {
+    const dur = Math.min(Number(el.hDur.value), st.max_replay_s);
+    el.hStart.value = toLocalInput(Math.max(from, to - dur), off);
+  }
+  if (!replayData) {
+    setHistoryInfo(`Kayıtlı aralık: ${formatLocalTime(from, off, false)} – ${formatLocalTime(to, off, false)}`);
+    void loadReplay();
+  }
+}
+
+async function loadReplay(): Promise<void> {
+  const off = utcOffset();
+  const start = fromLocalInput(el.hStart.value, off);
+  const dur = Number(el.hDur.value);
+  if (!Number.isFinite(start)) {
+    setHistoryInfo("Başlangıç zamanını seçin.", true);
+    return;
+  }
+  replayAbort?.abort();
+  const ctl = new AbortController();
+  replayAbort = ctl;
+  el.hLoad.disabled = true;
+  setHistoryInfo("Yükleniyor…");
+  try {
+    const r = await fetchReplay(start, start + dur, ctl.signal);
+    if (ctl.signal.aborted) return;
+    replayData = new ReplayData(r);
+    const speed = Number(el.hSpeed.value) || 30;
+    playback = new Playback(r.from, r.to, speed);
+    el.hSeek.min = String(Math.floor(r.from));
+    el.hSeek.max = String(Math.ceil(r.to));
+    el.hSeek.value = el.hSeek.min;
+    el.hSeek.disabled = false;
+    el.hPlay.disabled = false;
+    setHistoryInfo(
+      replayData.fixCount > 0
+        ? `${fmtInt(replayData.aircraftCount)} uçak, ${fmtInt(replayData.fixCount)} konum`
+        : "Bu aralıkta veri yok.",
+      replayData.fixCount === 0,
+    );
+    if (replayData.fixCount > 0) playback.play(performance.now());
+  } catch (e) {
+    if (!ctl.signal.aborted) setHistoryInfo(`Yüklenemedi: ${e instanceof Error ? e.message : String(e)}`, true);
+  } finally {
+    if (replayAbort === ctl) el.hLoad.disabled = false;
+  }
+  update();
+}
+
+function updateHistory(): void {
+  const nowMs = performance.now();
+  if (playback && replayData) {
+    if (playback.playing && playback.ended(nowMs)) playback.pause(nowMs);
+    const t = playback.now(nowMs);
+    const frame = replayData.frameAt(t);
+    byIcao = new Map(frame.map((a) => [a.icao24, a]));
+    if (selected !== null && !byIcao.has(selected)) markSelectedEnded();
+    if (overlays) overlays.setFrame(buildFrame(frame, t, selectedEnded ? null : selected));
+    if (selected !== null && !selectedEnded) renderPanel();
+    if (document.activeElement !== el.hSeek) el.hSeek.value = String(Math.round(t));
+    setText(el.hTime, formatLocalTime(t, utcOffset()));
+    const playing = playback.playing;
+    setText(el.hPlay, playing ? "❚❚" : "▶");
+    el.hPlay.setAttribute("aria-label", playing ? "Duraklat" : "Oynat");
+  } else if (overlays) {
+    overlays.setFrame(buildFrame([], 0, null));
+  }
+  renderStatus();
+}
+
+el.hLoad.addEventListener("click", () => void loadReplay());
+el.hDur.addEventListener("change", () => void loadReplay());
+el.hStart.addEventListener("change", () => void loadReplay());
+el.hPlay.addEventListener("click", () => {
+  if (!playback) return;
+  const now = performance.now();
+  if (playback.playing) playback.pause(now);
+  else playback.play(now);
+  update();
+});
+el.hSeek.addEventListener("input", () => {
+  playback?.seek(Number(el.hSeek.value), performance.now());
+  update();
+});
+el.hSpeed.addEventListener("change", () => {
+  playback?.setSpeed(Number(el.hSpeed.value) || 30, performance.now());
+});
+
+// ---------------------------------------------------------------- statistics
+const nf1 = new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 1 });
+
+function cell(text: string): HTMLTableCellElement {
+  const td = document.createElement("td");
+  td.textContent = text;
+  return td;
+}
+
+function fillRows(body: HTMLTableSectionElement, rows: string[][], cols: number, empty: string): void {
+  const frag = document.createDocumentFragment();
+  if (rows.length === 0) {
+    const tr = document.createElement("tr");
+    const td = cell(empty);
+    td.colSpan = cols;
+    td.className = "empty";
+    tr.append(td);
+    frag.append(tr);
+  }
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.append(...r.map(cell));
+    frag.append(tr);
+  }
+  body.replaceChildren(frag);
+}
+
+function renderStats(s: StatsResponse): void {
+  const off = s.utc_offset_s;
+  setText(el.sSub, `${formatLocalTime(s.from, off, false)} – ${formatLocalTime(s.to, off, false)} (TSİ)`);
+  const days = Math.max(1, (s.to - s.from) / 86400);
+  setText(el.kFlights, fmtInt(s.totals.flights));
+  setText(el.kAircraft, fmtInt(s.totals.aircraft));
+  setText(el.kPerDay, nf1.format(s.totals.flights / days));
+  setText(el.kPeak, s.peak_hour === null ? "—" : `${String(s.peak_hour).padStart(2, "0")}:00`);
+
+  const daily = dailyBars(s);
+  const busiest = s.daily.findIndex((d) => d.date === s.busiest_day);
+  el.sDaily.innerHTML = barChartSvg(daily, {
+    ariaLabel: "Günlük uçuş sayısı",
+    labelEvery: Math.max(1, Math.ceil(daily.length / 7)),
+    highlight: busiest >= 0 ? busiest : null,
+  });
+  el.sHours.innerHTML = barChartSvg(hourBars(s), {
+    ariaLabel: "Saatlere göre havadaki uçuş sayısı",
+    labelEvery: 3,
+    highlight: s.peak_hour,
+    formatValue: (v) => nf1.format(v),
+  });
+  const byIcaoCode = new Map(s.airports.map((a) => [a.icao, a]));
+  const name = (icao: string) => {
+    const a = byIcaoCode.get(icao);
+    return a ? airportLabel(a) : icao;
+  };
+  fillRows(
+    el.sAirports,
+    s.airports.slice(0, 12).map((a) => [airportLabel(a), fmtInt(a.departures), fmtInt(a.arrivals)]),
+    3,
+    "Bu aralıkta kalkış/iniş görülmedi.",
+  );
+  fillRows(
+    el.sRoutes,
+    s.routes.map((r) => [`${name(r.from)} → ${name(r.to)}`, fmtInt(r.flights)]),
+    2,
+    "Kalkışı ve inişi birlikte görülen uçuş yok.",
+  );
+  setText(el.corrMax, `${fmtInt(s.corridors.max)} uçuş`);
+  overlays?.setCorridors(corridorsToGeoJSON(s));
+  overlays?.setCorridorsVisible(mode === "stats" && corridorsOn);
+}
+
+async function loadStats(): Promise<void> {
+  statsAbort?.abort();
+  const ctl = new AbortController();
+  statsAbort = ctl;
+  el.sBody.setAttribute("aria-busy", "true");
+  const st = await refreshStatus();
+  const notes: string[] = [];
+  if (st?.mode === "replay") notes.push(`Kayıttan oynatma${st.label ? ` (${st.label})` : ""}: sayılar bu kayda aittir.`);
+  try {
+    // Replays end at the recording's end; live data at "now".
+    const end = st?.mode === "replay" && st.history ? st.history.to + 1 : (st?.now ?? Date.now() / 1000);
+    const s = await fetchStats({ from: end - statsRange, to: end }, ctl.signal);
+    if (ctl.signal.aborted) return;
+    stats = s;
+    if (s.totals.flights === 0) notes.push("Bu aralıkta tamamlanmış uçuş yok.");
+    renderStats(s);
+    el.sNote.classList.remove("err");
+  } catch (e) {
+    if (ctl.signal.aborted) return;
+    notes.push(`İstatistik alınamadı: ${e instanceof Error ? e.message : String(e)}`);
+    el.sNote.classList.add("err");
+  } finally {
+    el.sBody.removeAttribute("aria-busy");
+  }
+  el.sNote.hidden = notes.length === 0;
+  setText(el.sNote, notes.join(" "));
+}
+
+for (const b of Array.from(el.stats.querySelectorAll<HTMLButtonElement>(".seg .btn"))) {
+  b.addEventListener("click", () => {
+    statsRange = Number(b.dataset.range) || 604800;
+    for (const o of Array.from(el.stats.querySelectorAll<HTMLButtonElement>(".seg .btn"))) {
+      o.setAttribute("aria-pressed", String(o === b));
+    }
+    void loadStats();
+  });
+}
+
+el.btnCorridors.addEventListener("click", () => {
+  corridorsOn = !corridorsOn;
+  el.btnCorridors.setAttribute("aria-pressed", String(corridorsOn));
+  overlays?.setCorridorsVisible(mode === "stats" && corridorsOn);
+});
+
+el.btnAbout.addEventListener("click", () => void refreshStatus());
+
 renderStatus();
 void initMap();
 feed.start();
@@ -614,5 +977,8 @@ startTicking();
 (window as unknown as { sema?: unknown }).sema = {
   get hello() { return hello; },
   get map() { return mapRef; },
+  get mode() { return mode; },
+  get stats() { return stats; },
   serverNow,
+  viewNow,
 };
