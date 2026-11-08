@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "sema/anomaly.hpp"
 #include "sema/state_vector.hpp"
 
 namespace sema {
@@ -40,6 +41,9 @@ public:
     std::size_t insert_positions(std::chrono::system_clock::time_point fetched_at,
                                  const std::vector<StateVector>& states);
     void log_fetch(const FetchLogEntry& e);
+    // Inserts or updates anomaly events by key (opened, updated and closed
+    // events can all be passed; the latest state wins).
+    void upsert_events(const std::vector<AnomalyEvent>& events);
     // Summarise and delete raw rows older than `keep`. Returns rows deleted.
     std::int64_t rollup_and_prune(std::chrono::hours keep);
 

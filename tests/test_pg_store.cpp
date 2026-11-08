@@ -45,7 +45,7 @@ protected:
         store_->migrate();
         conn_ = std::make_unique<pqxx::connection>(db_url());
         pqxx::work tx(*conn_);
-        tx.exec("TRUNCATE positions, positions_hourly, fetch_log, boundaries");
+        tx.exec("TRUNCATE positions, positions_hourly, fetch_log, boundaries, anomaly_events");
         tx.commit();
     }
 
@@ -64,7 +64,7 @@ protected:
 TEST_F(PgStoreTest, MigrateIsIdempotent) {
     EXPECT_NO_THROW(store_->migrate());
     EXPECT_NO_THROW(store_->migrate());
-    EXPECT_EQ(scalar<int>("SELECT max(version) FROM schema_version"), 1);
+    EXPECT_EQ(scalar<int>("SELECT max(version) FROM schema_version"), 2);
 }
 
 TEST_F(PgStoreTest, InsertAndReadBack) {
@@ -101,6 +101,44 @@ TEST_F(PgStoreTest, InsertAndReadBack) {
         "SELECT callsign IS NULL, squawk IS NULL, time_position IS NULL, baro_altitude_m IS NULL, "
         "velocity_ms IS NULL FROM positions WHERE icao24 = '4b8e01'");
     for (int i = 0; i < 5; ++i) EXPECT_TRUE(n[i].as<bool>()) << "column " << i;
+}
+
+TEST_F(PgStoreTest, EventsUpsertByKey) {
+    sema::AnomalyEvent e;
+    e.id = 7;
+    e.kind = sema::EventKind::Emergency;
+    e.icao24 = "4bb1a2";
+    e.callsign = "THY1AB";
+    e.origin_country = "Turkey";
+    e.start_time = 1'700'000'000;
+    e.detect_time = 1'700'000'065;
+    e.end_time = 1'700'000'065;
+    e.pos = {40.0, 30.0};
+    e.altitude_m = 10000.0;
+    e.summary = "Acil durum kodu 7700 (genel acil durum)";
+    e.details = {{"squawk", "7700"}};
+    e.track = {{1'699'999'940, {39.99, 29.9}, 10000.0}, {1'700'000'000, {40.0, 30.0}, 10000.0}};
+    store_->upsert_events({e});
+
+    e.active = false;
+    e.end_time = 1'700'000'600;
+    e.track.push_back({1'700'000'600, {40.1, 30.5}, 9000.0});
+    store_->upsert_events({e});
+
+    EXPECT_EQ(scalar<int>("SELECT count(*) FROM anomaly_events"), 1);
+    pqxx::work tx(*conn_);
+    auto r = tx.exec1(
+        "SELECT key, kind, active, extract(epoch FROM end_time)::bigint, details->>'squawk', "
+        "ST_NPoints(track), ST_Y(geom::geometry) FROM anomaly_events");
+    EXPECT_EQ(r[0].as<std::string>(), "emergency:4bb1a2:1700000000");
+    EXPECT_EQ(r[1].as<std::string>(), "emergency");
+    EXPECT_FALSE(r[2].as<bool>());
+    EXPECT_EQ(r[3].as<std::int64_t>(), 1'700'000'600);
+    EXPECT_EQ(r[4].as<std::string>(), "7700");
+    EXPECT_EQ(r[5].as<int>(), 3);
+    EXPECT_NEAR(r[6].as<double>(), 40.0, 1e-9);
+    tx.commit();
+    EXPECT_EQ(scalar<int>("SELECT count(*) FROM daily_events"), 1);
 }
 
 TEST_F(PgStoreTest, DuplicateInsertIgnored) {

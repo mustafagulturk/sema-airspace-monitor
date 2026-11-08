@@ -22,6 +22,7 @@
         <span id="st-conn" class="st-conn">Bağlanıyor…</span>
       </div>
       <div class="actions">
+        <button type="button" id="btn-events" class="btn btn-events" aria-pressed="false" aria-controls="events">Olaylar <span id="events-badge" class="badge" hidden></span></button>
         <button type="button" id="btn-coverage" class="btn" aria-pressed="false" aria-label="Kapsama haritasını göster/gizle">Kapsama</button>
         <button type="button" id="btn-about" class="btn btn-icon" aria-label="Hakkında" aria-haspopup="dialog">?</button>
       </div>
@@ -76,6 +77,32 @@
       <p class="muted small panel-note">Konum, son alınan sinyalden ileriye doğru tahmin edilir.</p>
     </aside>
 
+    <aside id="events" class="panel events-panel" tabindex="-1" aria-labelledby="ev-title" hidden>
+      <div class="panel-grip" aria-hidden="true"></div>
+      <div class="panel-head">
+        <div>
+          <h2 id="ev-title">Olaylar</h2>
+          <div id="ev-sub" class="muted small"></div>
+        </div>
+        <button type="button" id="events-close" class="btn btn-icon" aria-label="Olay listesini kapat">✕</button>
+      </div>
+      <div id="ev-list-view">
+        <ul id="ev-list" class="ev-list" aria-label="Son olaylar"></ul>
+        <p id="ev-empty" class="muted small">Henüz olay yok. Acil durum kodları, ani irtifa kaybı, bekleme, rota sapması ve uzun sinyal kaybı burada listelenir.</p>
+      </div>
+      <div id="ev-detail" hidden>
+        <button type="button" id="ev-back" class="btn ev-back">← Tüm olaylar</button>
+        <div class="ev-detail-head">
+          <span id="evd-kind" class="kind-badge"></span>
+          <h3 id="evd-title">—</h3>
+        </div>
+        <p id="evd-summary" class="ev-summary"></p>
+        <dl id="evd-facts" class="facts"></dl>
+        <button type="button" id="evd-aircraft" class="btn" hidden>Uçağı haritada göster</button>
+        <p class="muted small panel-note">Haritadaki kesikli çizgi, uçağın olay sırasındaki izidir. Olaylar otomatik tespit edilir; resmî bir acil durum bildirimi değildir.</p>
+      </div>
+    </aside>
+
     <dialog id="about" class="about" aria-labelledby="about-title">
       <div class="panel-head">
         <h2 id="about-title">Hakkında</h2>
@@ -84,6 +111,7 @@
       <p><b>Semâ</b>, Türkiye üzerindeki sivil hava trafiğini canlı olarak gösteren, ticari olmayan bir projedir.</p>
       <p>Askerî ve devlet hava araçları filtrelenir ve hiçbir zaman gösterilmez.</p>
       <p>Konumlar ADS-B verisinden tahmin edilir; seyrüsefer veya emniyet amaçlı kullanılamaz.</p>
+      <p>“Olaylar” listesi, sivil uçakların açık verisinden otomatik çıkarılır (acil durum kodu, ani irtifa kaybı, bekleme, rota sapması, uzun sinyal kaybı). Yanlış alarm olabilir; resmî bilgi yerine geçmez.</p>
       <h3>Veri kaynağı</h3>
       <p id="about-attribution">Veri: OpenSky Network.</p>
       <p class="small">Schäfer, Strohmeier, Lenders, Martinovic, Wilhelm, “Bringing Up OpenSky: A Large-scale ADS-B Sensor Network for Research”, <i>IPSN 2014</i>.</p>

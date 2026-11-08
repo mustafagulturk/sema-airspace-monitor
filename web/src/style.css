@@ -278,3 +278,67 @@ body.panel-open .maplibregl-ctrl-top-right { display: none; }
   /* One legend at a time on phones. */
   body.coverage-on .legend-alt { display: none; }
 }
+
+/* ---- events (phase 4): left side panel on desktop, bottom sheet on phones ---- */
+.btn-events { gap: 6px; }
+.badge {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--muted);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+.badge-alert { background: #c92a2a; }
+.btn[aria-pressed="true"] .badge { background: rgba(255, 255, 255, 0.3); }
+.events-panel { right: auto; left: calc(10px + var(--safe-l)); width: 340px; }
+.ev-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.ev-item {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+}
+.ev-item:hover { background: var(--btn-bg-hover); }
+.ev-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ev-item.ev-active { border-left: 4px solid #c92a2a; }
+.ev-item-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ev-item-name { font-weight: 700; }
+.kind-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.ev-back { margin: 8px 0 6px; height: 32px; }
+.ev-detail-head { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.ev-detail-head h3 { margin: 0; font-size: 18px; }
+.ev-summary { margin: 8px 0 0; }
+/* With both panels open on desktop the legends would sit under the events panel. */
+body.events-open .legends { display: none; }
+
+@media (max-width: 640px) {
+  .btn-events { padding: 0 8px; }
+  .events-panel { left: var(--safe-l); right: var(--safe-r); width: auto; max-height: 55dvh; }
+  body.events-open .maplibregl-ctrl-bottom-right, body.events-open .maplibregl-ctrl-bottom-left { display: none; }
+  .ev-list { margin-top: 6px; }
+}
+
+/* Small phones: the header holds three buttons; data age is still shown by the live dot's colour. */
+@media (max-width: 420px) {
+  .st-age { display: none; }
+}

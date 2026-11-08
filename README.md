@@ -16,7 +16,12 @@ Semâ, Türkiye üzerindeki gerçek **sivil** uçak trafiğini [OpenSky Network]
 > time per update), plus record/replay of filtered snapshots. Phase 3 adds the live map: a Boost.Beast
 HTTP/WebSocket server inside the C++ collector pushes tracker estimates, short trails and a rolling
 24-hour coverage grid to a TypeScript + MapLibre GL front end, which moves each aircraft between
-OpenSky updates with the Kalman filter's own constant-velocity prediction. Non-commercial, see *Ethical and legal
+OpenSky updates with the Kalman filter's own constant-velocity prediction. Phase 4 adds anomaly
+detection on the tracker's filtered fixes: emergency squawks (7500/7600/7700, confirmed on two
+reports), rapid descent, holding/circling (staying inside a small circle at speed, robust to the
+~65 s sampling), turn-backs at cruise and long signal loss in well-covered cells. Events are stored
+in PostGIS, pushed to the map's event list with the aircraft's track, and counted per 1,000
+airborne aircraft-hours so thresholds can be tuned on real recordings. Non-commercial, see *Ethical and legal
 > limits* below.
 
 ## Durum
@@ -26,7 +31,7 @@ OpenSky updates with the Kalman filter's own constant-velocity prediction. Non-c
 | 1 | Veri toplama: OpenSky istemcisi, Türkiye filtresi, askeri/devlet filtresi, PostGIS, CI | Tamamlandı |
 | 2 | İz takibi: Kalman filtresi, sinyal kaybı, veri kalitesi, ölçümler | Tamamlandı (gerçek veriyle ölçüm bekliyor) |
 | 3 | MapLibre ile canlı harita (WebSocket), detay paneli, kapsama haritası | **Geliştiriliyor** |
-| 4 | Anomali tespiti (7500/7600/7700, irtifa kaybı, bekleme) | Planlandı |
+| 4 | Anomali tespiti: acil durum kodları, ani irtifa kaybı, bekleme, rota sapması, uzun sinyal kaybı; olay listesi | Tamamlandı (eşikler gerçek veriyle ayarlanmayı bekliyor) |
 | 5 | Tekrar oynatma, istatistik, Docker Compose ile yayın, Prometheus/Grafana | Planlandı |
 
 ## Mimari (Aşama 1)
@@ -135,7 +140,8 @@ geldiğinde uçak düzeltilmiş tahmine geçer. Sinyali kesilen iz (coasting) en
 sürer ve soluk gösterilir.
 
 **Mesajlar** (`kLiveProtocolVersion = 1`, JSON): `hello` (kaynak: canlı/kayıt, OpenSky atfı),
-`snapshot` (tüm izler, saat ve hız katsayısı) ve `coverage` (hücre başına rapor sayısı). Tam liste
+`snapshot` (tüm izler, saat ve hız katsayısı), `coverage` (hücre başına rapor sayısı) ve `events`
+(Aşama 4: süren ve son biten anomali olayları, izleriyle). Tam liste
 `include/sema/live.hpp` içindedir. Anlık görüntü 300 uçakta sıkıştırmasız ~150 KB'tır; WebSocket
 `permessage-deflate` ile sıkıştırılır.
 
@@ -168,6 +174,48 @@ olur. Toplayıcı bu aralığı kalan krediye ve UTC gece yarısına kalan süre
 karasuyu 6 deniz mili olduğu için çokgen orada denizi biraz fazla kapsar; Yunan adalarının kara
 alanı çıkarıldığı için adaların üzerindeki uçaklar dışarıda kalır. Bu Aşama 1 için yeterli bir
 yaklaşıklıktır.
+
+## Anomali tespiti (Aşama 4)
+
+```
+Tracker ──► AnomalyDetector ──┬──► anomaly_events (PostGIS) + olay dosyası (JSON Lines)
+            5 kural, iz başına ├──► LiveServer "events" konusu ──► haritada olay listesi ve olay anındaki iz
+            30 dk konum geçmişi └──► log ("anomaly" satırları, saatlik "anomaly_metrics")
+```
+
+Dedektör izleyiciden hemen sonra, **aynı filtrelenmiş** anlık görüntülerle çalışır. Kurallar ham
+raporları değil, izleyicinin kalite kontrolünden geçmiş, Kalman ile düzeltilmiş konum ve irtifalarını
+kullanır; böylece reddedilen bir "ışınlanma" ya da 30 km'lik bozuk bir irtifa hiçbir kuralı
+tetikleyemez. Askeri/devlet uçakları bu noktaya hiç ulaşmaz, yani onlar için olay oluşamaz
+(`MilitaryAircraftNeverReachTheDetector` testi).
+
+| Kural | Ne zaman olay açılır | Neden bu eşik |
+|---|---|---|
+| **Acil durum kodu** | 7500 (yasa dışı müdahale), 7600 (telsiz arızası) veya 7700 (genel acil durum) **art arda 2 raporda**, uçak havadayken | Tek bozuk Mode S yanıtı "kaçırma" alarmı vermesin. Kod 2 rapor boyunca başka olunca olay kapanır. |
+| **Ani irtifa kaybı** | Her adımı aşağı giden en az 3 konumda, en çok 4 dk içinde ≥ 1.500 m kayıp ve ortalama ≥ 22 m/s (~4.300 ft/dk), başlangıç ≥ 4.000 m | Normal alçalma 1.500–3.000 ft/dk'dır (8–15 m/s). Acil alçalma 4.000–6.000+ ft/dk'dır. Düşük irtifadaki yaklaşma dışarıda kalır. |
+| **Bekleme / daire çizme** | En az 8 dk ve 6 konum boyunca tüm konumlar merkezlerine ≤ 15 km, ortalama yer hızı ≥ 60 m/s | Bu hızla 8 dakikada 30+ km yol alınır; 15 km'lik dairede kalmak tur atmak demektir. Yön değişimini saymak ~65 s örneklemede yanıltır (bir dönüş iki rapor arasında başlayıp biter); geometrik ölçüt buna dayanıklıdır. 60 m/s altı (eğitim uçakları, helikopterler) dışarıda kalır. |
+| **Rota sapması** | Seyir irtifasında (≥ 6.000 m) en az 4 konumluk düz bir rotadan (±12°) sonra ≥ 120° farklı yeni bir rota iki bacak boyunca tutulursa | Hava yolu dönüşleri çoğunlukla 90°'nin altındadır; seyirde geri dönmek bir dönüş ya da başka meydana yönelme görüntüsüdür. Kalkış/yaklaşmadaki rutin ters dönüşler irtifa sınırının altında kalır, bekleme sürerken bu kural çalışmaz. |
+| **Uzun sinyal kaybı** | Onaylı ve ≥ 3.000 m'deki iz 5 dk konum alamaz, tahmini konumu hâlâ Türkiye içindeyse ve son konumunun 0,5°'lik hücresi son 24 saatte ≥ 200 rapor almışsa | Doğudaki kapsama boşlukları (bkz. kapsama haritası) yüzünden her kayıp olay olmasın. Bu kural ilk saatlerde, kapsama sayıları birikene kadar sessizdir. Sinyal dönünce ya da iz bitince olay kapanır. |
+
+Aynı uçakta aynı türden ikinci olay, öncekinin bitiminden 15 dk geçmeden açılmaz (kısa süre kuralın
+dışına çıkıp geri giren bir alçalma tek olaydır). Her olay, başlangıcından 15 dk öncesinden bitişine
+kadar uçağın izini (en çok 120 nokta) taşır; harita olayı seçince bu izi kesikli çizgiyle gösterir.
+Tüm eşikler `AnomalyConfig` içindedir (`include/sema/anomaly.hpp`).
+
+**Yanlış alarm oranı ve eşik ayarı.** Olay sayısı tek başına anlamsızdır; dedektör, havadaki onaylı
+izleri zamanla çarpıp **uçak-saat** biriktirir ve her türü *1.000 uçak-saat başına olay* olarak
+verir. Eşikler gerçek bir kayıtla şöyle ayarlanır:
+
+1. Toplayıcıyla en az birkaç günlük kayıt alınır (`--record kayit.jsonl`).
+2. `sema_replay kayit.jsonl --events` her olayı zaman, çağrı adı ve özetle listeler.
+3. Her olay elle kontrol edilir (izine ve, varsa, açık kaynak haberlere bakılarak) ve gerçek/yanlış
+   diye işaretlenir.
+4. Yanlış alarm veren kuralın eşiği `--anomaly AD=DEĞER` ile değiştirilip (ör.
+   `--anomaly descent_min_rate_ms=25`) aynı kayıt yeniden oynatılır; gerçek olayları kaybetmeden yanlış
+   alarmları düşüren değer `AnomalyConfig`'e yazılır. `--anomaly list` tüm eşik adlarını verir.
+
+Gerçek veriyle yapılan ayar ve sonuçları "Ölçümler" bölümüne eklenecek; şu anki değerler yukarıdaki
+gerekçelere dayanan başlangıç değerleridir.
 
 ## Kurulum
 
@@ -232,6 +280,25 @@ durumda üstte "Kayıttan oynatma" bandı gösterir:
 ./build/release/sema_replay tests/fixtures/replay_synthetic.jsonl --serve 8080 --speed 10 --label "sentetik veri"
 ```
 
+### Olaylar
+
+```bash
+./build/release/sema_collector --dry-run --serve 8080 --events olaylar.jsonl   # ya da SEMA_EVENTS_FILE
+./build/release/sema_replay kayit.jsonl --events                               # olay listesi ve oranlar
+./build/release/sema_replay kayit.jsonl --events --anomaly holding_max_radius_m=12000
+# Her kural için bir sentetik olay içeren kayıt (90 dk olduğu için kapsama eşiği düşürülür):
+./build/release/sema_replay tests/fixtures/anomaly_synthetic.jsonl --events --loss-min-coverage 3
+./build/release/sema_replay tests/fixtures/anomaly_synthetic.jsonl --loss-min-coverage 3 --serve 8080 --speed 30 --label "sentetik veri"
+```
+
+Veritabanı kullanılıyorsa olaylar `anomaly_events` tablosuna yazılır (açılışta, sürerken ve
+kapanışta güncellenir); `daily_events` görünümü günlük ve tür başına sayıları verir:
+
+```sql
+SELECT * FROM daily_events;
+SELECT start_time, kind, callsign, summary FROM anomaly_events ORDER BY start_time DESC LIMIT 20;
+```
+
 Arayüz geliştirirken `cd web && npm run dev` Vite sunucusunu açar ve `/ws` isteklerini 8080'deki
 sunucuya yönlendirir.
 
@@ -293,6 +360,24 @@ Bu sentetik veride çıkan iki ders, gerçek veriyle doğrulanacak:
   kazancı da küçük; asıl katkısı gürültülü (MLAT) konumları yumuşatmak, hız raporu olmayan uçakta hızı
   kestirmek, belirsizlik vermek ve haritada raporlar arasını doldurmaktır.
 
+### Anomali tespiti
+
+Gerçek veriyle ölçüm henüz yapılmadı. Aşağıdaki iki satır **sentetik** kayıtlardan gelir ve yalnızca
+kuralların doğru olayları bulup başka olay üretmediğini gösterir; gerçek bir olay oranı değildir.
+
+| Kayıt (sentetik) | Beklenen | Bulunan |
+|---|---|---|
+| `anomaly_synthetic.jsonl` (90 dk, 38 uçak, `tools/make_anomaly_fixture.py`) | 7700, ani alçalma (35 m/s), geri dönüş, bekleme, 9 dk sinyal kaybı; tek raporluk 7500 *yok sayılmalı*; 30 normal uçuş sessiz kalmalı | 5/5 olay, başka olay yok, tek 7500 yok sayıldı |
+| `replay_synthetic.jsonl` (Aşama 2'nin kaydı, bilerek bozulmuş raporlarla) | Bekleme turları (SMX601); ışınlanma, 30 km irtifa, 950 m/s hız ve adres çakışması olay *üretmemeli* | Yalnızca bekleme |
+
+Dedektörün anlık görüntü başına işlem süresi bu kayıtlarda medyan ~50–60 µs'dir (Release, anlık görüntü başına 19–28 uçak).
+
+| Ölçüt (gerçek veri) | Değer |
+|---|---|
+| Tür başına olay / 1.000 uçak-saat | henüz ölçülmedi |
+| Elle kontrolde yanlış alarm oranı | henüz ölçülmedi |
+| Tespit edilen olaylar (örnekler) | henüz ölçülmedi |
+
 ## Etik ve hukuki sınırlar
 
 - **Ticari olmayan kullanım.** OpenSky verisi yalnızca ticari olmayan amaçla kullanılır. Sitede reklam
@@ -309,6 +394,10 @@ Bu sentetik veride çıkan iki ders, gerçek veriyle doğrulanacak:
   çıkarmaya yönelik herhangi bir özellik eklenmez. Harita yalnızca filtreden geçmiş sivil uçakları
   alır: `LiveState` izleyiciyle aynı filtrelenmiş anlık görüntülerle beslenir, askeri/devlet uçağı
   sunucuya hiç ulaşmaz. Haritada üs, askeri bölge veya benzeri katman yoktur.
+- **Olaylar yalnızca sivil uçaklar içindir ve resmî bilgi değildir.** Anomali dedektörü askeri/devlet
+  filtresinden sonra çalışır; askeri bölge, üs çevresi veya askeri hareketle ilgili hiçbir kural yoktur.
+  Olaylar açık veriden otomatik çıkarılır, yanlış alarm olabilir; arayüz bunu olay ayrıntısında ve
+  "Hakkında" panelinde açıkça yazar.
 - **Kaynak gösterimi.** Veri OpenSky Network'ten gelir ve OpenSky'ın istediği makale aşağıda
   gösterilir. Aynı atıf haritanın köşesinde ve "Hakkında" panelinde de yer alır.
 

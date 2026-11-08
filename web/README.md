@@ -1,7 +1,8 @@
 # Semâ — web haritası
 
 Canlı Türkiye hava sahası haritasının tarayıcı istemcisi (TypeScript, Vite, MapLibre GL).
-Sunucu `/ws` üzerinden JSON mesajları (hello, coverage, snapshot) gönderir; istemci hiçbir şey göndermez.
+Sunucu `/ws` üzerinden JSON mesajları (hello, coverage, snapshot, events) gönderir; istemci hiçbir şey göndermez.
+`events` mesajı süren ve son biten anomali olaylarını (en çok 50) izleriyle birlikte taşır; "Olaylar" düğmesi listeyi açar, bir olay seçilince uçağın o andaki izi haritada gösterilir.
 Uçak konumları iki anlık görüntü arasında sabit hızla ileriye doğru tahmin edilerek akıcı biçimde hareket ettirilir.
 
 ## Geliştirme

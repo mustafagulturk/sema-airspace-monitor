@@ -8,6 +8,7 @@ import {
 } from "maplibre-gl";
 import { createAircraftSdf, ICON_PIXEL_RATIO } from "./icon";
 import type { Frame } from "./features";
+import { KIND_COLOR, type EventGeometry } from "./events";
 
 export const DEFAULT_STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
 export const TURKEY_CENTER: [number, number] = [35, 39];
@@ -81,6 +82,8 @@ export interface Overlays {
   setCoverageVisible(on: boolean): void;
   setBoundary(data: GeoJSON.GeoJSON): void;
   setSelected(icao24: string | null): void;
+  /** Shows one anomaly event's track and markers, or clears them. */
+  setEvent(geometry: EventGeometry | null): void;
 }
 
 /** Adds all Semâ sources and layers. Call after the style has loaded. */
@@ -95,6 +98,8 @@ export function addOverlays(map: maplibregl.Map, style: StyleSpecification): Ove
   map.addSource("boundary", { type: "geojson", data: EMPTY });
   map.addSource("trails", { type: "geojson", data: EMPTY });
   map.addSource("trail-selected", { type: "geojson", data: EMPTY });
+  map.addSource("event-track", { type: "geojson", data: EMPTY });
+  map.addSource("event-points", { type: "geojson", data: EMPTY });
   map.addSource("aircraft", { type: "geojson", data: EMPTY });
 
   map.addLayer(
@@ -149,6 +154,37 @@ export function addOverlays(map: maplibregl.Map, style: StyleSpecification): Ove
     source: "trail-selected",
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": "#1864ab", "line-width": 2.5 },
+  });
+  const kindColor: ExpressionSpecification = [
+    "match",
+    ["get", "kind"],
+    ...Object.entries(KIND_COLOR).flat(),
+    "#c92a2a",
+  ] as unknown as ExpressionSpecification;
+  map.addLayer({
+    id: "event-track-casing",
+    type: "line",
+    source: "event-track",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#ffffff", "line-width": 6, "line-opacity": 0.9 },
+  });
+  map.addLayer({
+    id: "event-track-line",
+    type: "line",
+    source: "event-track",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": kindColor, "line-width": 3, "line-dasharray": [2, 1] },
+  });
+  map.addLayer({
+    id: "event-points",
+    type: "circle",
+    source: "event-points",
+    paint: {
+      "circle-radius": ["case", ["==", ["get", "role"], "event"], 8, 4],
+      "circle-color": ["case", ["==", ["get", "role"], "event"], kindColor, "#ffffff"],
+      "circle-stroke-color": ["case", ["==", ["get", "role"], "event"], "#ffffff", "#c92a2a"],
+      "circle-stroke-width": 2,
+    },
   });
   map.addLayer({
     id: "aircraft-selected-halo",
@@ -223,6 +259,10 @@ export function addOverlays(map: maplibregl.Map, style: StyleSpecification): Ove
     },
     setBoundary(data) {
       void src("boundary")?.setData(data);
+    },
+    setEvent(geometry) {
+      void src("event-track")?.setData(geometry?.track ?? EMPTY);
+      void src("event-points")?.setData(geometry?.points ?? EMPTY);
     },
     setSelected(icao24) {
       map.setFilter("aircraft-selected-halo", ["==", ["get", "icao24"], icao24 ?? ""]);
