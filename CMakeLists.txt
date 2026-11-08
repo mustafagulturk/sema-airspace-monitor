@@ -96,6 +96,9 @@ target_link_libraries(sema_collector PRIVATE sema_core sema_live)
 add_executable(sema_replay apps/replay.cpp)
 target_link_libraries(sema_replay PRIVATE sema_core sema_live)
 
+add_executable(sema_soak apps/soak.cpp)
+target_link_libraries(sema_soak PRIVATE sema_core)
+
 if(SEMA_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)

@@ -9,6 +9,20 @@
     <meta name="theme-color" content="#1a1d21" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath fill='%231864ab' d='M50 8c4 2 5 9 5 20v12l36 18v7l-36-9-1 22 12 9v6l-16-4-16 4v-6l12-9-1-22-36 9v-7l36-18V28c0-11 1-18 5-20z'/%3E%3C/svg%3E" />
     <title>Semâ — Canlı Türkiye Hava Sahası</title>
+    <!-- Link previews (LinkedIn, WhatsApp, X). VITE_SITE_URL is set from SEMA_DOMAIN at
+         image build time (Dockerfile); scrapers need an absolute image URL. The image is a
+         screenshot of a synthetic replay, not real traffic. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Semâ" />
+    <meta property="og:locale" content="tr_TR" />
+    <meta property="og:title" content="Semâ — Canlı Türkiye Hava Sahası" />
+    <meta property="og:description" content="Türkiye üzerindeki sivil hava trafiğinin canlı haritası: Kalman filtresiyle iz takibi, anomali tespiti, geçmiş ve istatistik. Veri: OpenSky Network. Ticari değildir." />
+    <meta property="og:url" content="%VITE_SITE_URL%/" />
+    <meta property="og:image" content="%VITE_SITE_URL%/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Türkiye haritası üzerinde uçak simgeleri (sentetik veriyle tekrar oynatma)" />
+    <meta name="twitter:card" content="summary_large_image" />
   </head>
   <body>
     <header class="topbar" role="banner">
