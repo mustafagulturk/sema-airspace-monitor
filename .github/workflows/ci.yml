@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DEPS: ninja-build libcurl4-openssl-dev nlohmann-json3-dev libpqxx-dev libgtest-dev
+  DEPS: ninja-build libcurl4-openssl-dev nlohmann-json3-dev libpqxx-dev libgtest-dev libboost-dev
 
 jobs:
   build-and-test:
@@ -66,3 +66,21 @@ jobs:
         run: cmake --build --preset debug --target sema_core sema_collector
       - name: clang-tidy
         run: run-clang-tidy -p build/debug -quiet "$PWD/(src|apps)/.*\.cpp$"
+
+  web:
+    name: web map (TypeScript)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

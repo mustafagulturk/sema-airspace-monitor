@@ -11,11 +11,15 @@
 //   SEMA_DAILY_CREDITS      daily OpenSky credit quota (default 4000)
 //   SEMA_RETENTION_HOURS    raw positions older than this are summarised and deleted (default 72)
 //   SEMA_RECORD_FILE        same as --record
+//   SEMA_LIVE_PORT          same as --serve
+//   SEMA_LIVE_ADDR          address the live map server listens on (default 127.0.0.1)
+//   SEMA_WEB_ROOT           built web map to serve (default ./web/dist)
 // Flags:
 //   --once           run a single cycle and exit
 //   --dry-run        do not touch the database; print a summary instead
 //   --record FILE    append every filtered snapshot (civil aircraft inside the
 //                    area only) to FILE as JSON Lines, for sema_replay
+//   --serve PORT     serve the live map (HTTP + WebSocket on /ws) on PORT
 //
 // Every cycle also runs the tracker (Kalman filters, track lifecycle, data
 // quality checks) and logs its counters; full tracker metrics are logged once
@@ -43,6 +47,8 @@
 #include "sema/clock.hpp"
 #include "sema/geo.hpp"
 #include "sema/http.hpp"
+#include "sema/live.hpp"
+#include "sema/live_server.hpp"
 #include "sema/military_filter.hpp"
 #include "sema/opensky_client.hpp"
 #include "sema/pg_store.hpp"
@@ -65,6 +71,9 @@ struct Options {
     long daily_credits = 4000;
     long retention_hours = 72;
     std::string record_file;
+    long serve_port = -1;  // -1: no live map server
+    std::string serve_addr = "127.0.0.1";
+    std::string web_root = "web/dist";
     bool once = false;
     bool dry_run = false;
 };
@@ -85,6 +94,13 @@ long env_long(const char* name, long fallback, long min_value) {
     return n;
 }
 
+long parse_port(const char* v) {
+    char* end = nullptr;
+    const long n = std::strtol(v, &end, 10);
+    if (end == v || *end != '\0' || n < 0 || n > 65535) throw std::runtime_error(std::string("invalid port: ") + v);
+    return n;
+}
+
 Options parse_options(int argc, char** argv) {
     Options o;
     for (int i = 1; i < argc; ++i) {
@@ -96,8 +112,11 @@ Options parse_options(int argc, char** argv) {
         } else if (a == "--record") {
             if (i + 1 >= argc) throw std::runtime_error("--record needs a file name");
             o.record_file = argv[++i];
+        } else if (a == "--serve") {
+            if (i + 1 >= argc) throw std::runtime_error("--serve needs a port");
+            o.serve_port = parse_port(argv[++i]);
         } else if (a == "-h" || a == "--help") {
-            std::cout << "usage: sema_collector [--once] [--dry-run] [--record FILE]\n"
+            std::cout << "usage: sema_collector [--once] [--dry-run] [--record FILE] [--serve PORT]\n"
                          "See the comment at the top of apps/collector.cpp for environment variables.\n";
             std::exit(0);
         } else {
@@ -110,6 +129,11 @@ Options parse_options(int argc, char** argv) {
     o.data_dir = env_or("SEMA_DATA_DIR", o.data_dir);
     o.aircraft_db = env_or("SEMA_AIRCRAFT_DB", "");
     if (o.record_file.empty()) o.record_file = env_or("SEMA_RECORD_FILE", "");
+    if (const char* port = std::getenv("SEMA_LIVE_PORT"); o.serve_port < 0 && port != nullptr && *port != '\0') {
+        o.serve_port = parse_port(port);
+    }
+    o.serve_addr = env_or("SEMA_LIVE_ADDR", o.serve_addr);
+    o.web_root = env_or("SEMA_WEB_ROOT", o.web_root);
     o.min_interval_s = env_long("SEMA_MIN_INTERVAL_S", o.min_interval_s, 5);
     o.daily_credits = env_long("SEMA_DAILY_CREDITS", o.daily_credits, 1);
     o.retention_hours = env_long("SEMA_RETENTION_HOURS", o.retention_hours, 1);
@@ -199,7 +223,24 @@ int run(const Options& opt) {
     auto last_metrics_log = Clock::now();
 
     sema::SystemClock clock;
-    SignalWatcher signals(clock);
+    SignalWatcher signals(clock);  // before any other thread starts, so they inherit the blocked signals
+
+    // Live map: only filtered (civil, in-area) snapshots ever reach it.
+    sema::LiveState live(area);
+    std::unique_ptr<sema::LiveServer> server;
+    if (opt.serve_port >= 0) {
+        sema::LiveServerConfig sc;
+        sc.address = opt.serve_addr;
+        sc.port = static_cast<std::uint16_t>(opt.serve_port);
+        sc.web_root = opt.web_root;
+        sc.files["/boundary.geojson"] = data_dir / "turkey_boundary.geojson";
+        server = std::make_unique<sema::LiveServer>(sc);
+        server->start();
+        server->publish("hello", sema::live_hello_json("live", "").dump());
+        server->publish("coverage", live.coverage_json().dump());
+        log_line({{"event", "live_server"}, {"address", opt.serve_addr}, {"port", server->port()},
+                  {"web_root", opt.web_root}});
+    }
     sema::CurlTransport http;
     sema::OpenSkyConfig cfg;
     cfg.client_id = opt.client_id;
@@ -256,6 +297,14 @@ int run(const Options& opt) {
                 }
             }
             const auto tr = tracker.process(filtered);
+            if (server) {
+                live.update(filtered, tracker);
+                const double now_s =
+                    std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+                server->publish("coverage", live.coverage_json().dump());
+                server->publish("snapshot", live.snapshot_json({now_s, 1.0}).dump());
+                line["live_clients"] = server->client_count();
+            }
             line["tracks"] = {{"tracked", tr.tracked},     {"confirmed", tr.confirmed}, {"coasting", tr.coasting},
                               {"created", tr.created},     {"ended", tr.ended.size()},  {"reacquired", tr.reacquired},
                               {"updates", tr.updates},     {"stale", tr.stale},         {"rejected", tr.rejected},
