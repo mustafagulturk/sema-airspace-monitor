@@ -30,7 +30,24 @@ import {
   formatVerticalRate,
   trackStateLabel,
 } from "./format";
-import { PROTOCOL_VERSION, type Aircraft, type CoverageMessage, type HelloMessage, type SnapshotMessage } from "./protocol";
+import {
+  PROTOCOL_VERSION,
+  type Aircraft,
+  type AnomalyEvent,
+  type CoverageMessage,
+  type EventsMessage,
+  type HelloMessage,
+  type SnapshotMessage,
+} from "./protocol";
+import {
+  eventBounds,
+  eventFacts,
+  eventGeometry,
+  eventHeadline,
+  formatEventTime,
+  KIND_COLOR,
+  KIND_LABEL,
+} from "./events";
 
 const TICK_MS = 250;
 /** Data older than this (server seconds) marks the feed as stale. */
@@ -60,6 +77,10 @@ let retryAt = 0;
 let coverageOn = false;
 let overlays: Overlays | null = null;
 let mapRef: maplibregl.Map | null = null;
+let eventsMsg: EventsMessage | null = null;
+let eventsOpen = false;
+/** Key of the event shown in detail, and the last copy of it (kept if it drops off the list). */
+let selectedEvent: AnomalyEvent | null = null;
 
 // ---------------------------------------------------------------- elements
 const el = {
@@ -93,6 +114,21 @@ const el = {
   about: $("about") as HTMLDialogElement,
   aboutClose: $("about-close") as HTMLButtonElement,
   aboutAttribution: $("about-attribution"),
+  btnEvents: $("btn-events") as HTMLButtonElement,
+  eventsBadge: $("events-badge"),
+  events: $("events"),
+  eventsClose: $("events-close") as HTMLButtonElement,
+  evSub: $("ev-sub"),
+  evListView: $("ev-list-view"),
+  evList: $("ev-list"),
+  evEmpty: $("ev-empty"),
+  evDetail: $("ev-detail"),
+  evBack: $("ev-back") as HTMLButtonElement,
+  evdKind: $("evd-kind"),
+  evdTitle: $("evd-title"),
+  evdSummary: $("evd-summary"),
+  evdFacts: $("evd-facts"),
+  evdAircraft: $("evd-aircraft") as HTMLButtonElement,
 };
 $("alt-bar").style.background = altitudeGradientCss();
 $("cov-bar").style.background = coverageGradientCss();
@@ -149,7 +185,13 @@ function renderPanel(): void {
   setText(el.pSigma, formatSigma(a.sigma));
 }
 
+function isNarrow(): boolean {
+  return window.matchMedia("(max-width: 640px)").matches;
+}
+
 function openPanel(icao24: string): void {
+  // Phones have room for one bottom sheet at a time.
+  if (isNarrow() && eventsOpen) closeEvents();
   if (endedTimer) clearTimeout(endedTimer);
   endedTimer = null;
   selected = icao24;
@@ -204,11 +246,162 @@ function markSelectedEnded(): void {
 
 el.panelClose.addEventListener("click", closePanel);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !el.about.open && selected !== null) {
+  if (e.key !== "Escape" || el.about.open) return;
+  if (selected !== null) {
     e.preventDefault();
     closePanel();
+  } else if (eventsOpen) {
+    e.preventDefault();
+    if (selectedEvent) showEventList();
+    else closeEvents();
   }
 });
+
+// ---------------------------------------------------------------- events panel (phase 4)
+function renderEventsBadge(): void {
+  const active = eventsMsg?.active ?? 0;
+  el.eventsBadge.hidden = active === 0;
+  setText(el.eventsBadge, String(active));
+  const emergency = eventsMsg?.events.some((e) => e.active && e.kind === "emergency") ?? false;
+  el.eventsBadge.classList.toggle("badge-alert", emergency);
+  el.btnEvents.title = active > 0 ? `${active} süren olay` : "Olay listesi";
+}
+
+function kindBadge(kind: AnomalyEvent["kind"]): HTMLElement {
+  const b = document.createElement("span");
+  b.className = "kind-badge";
+  b.style.background = KIND_COLOR[kind];
+  b.textContent = KIND_LABEL[kind];
+  return b;
+}
+
+function renderEventList(): void {
+  const events = eventsMsg?.events ?? [];
+  const total = eventsMsg ? Object.values(eventsMsg.counts).reduce((a, b) => a + (b ?? 0), 0) : 0;
+  setText(
+    el.evSub,
+    eventsMsg ? `${fmtInt(eventsMsg.active)} süren · toplam ${fmtInt(total)} (sunucu açıldığından beri)` : "",
+  );
+  el.evEmpty.hidden = events.length > 0;
+  const items = events.map((e) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ev-item";
+    if (e.active) btn.classList.add("ev-active");
+    btn.addEventListener("click", () => selectEvent(e));
+    const top = document.createElement("div");
+    top.className = "ev-item-top";
+    top.append(kindBadge(e.kind));
+    const when = document.createElement("span");
+    when.className = "muted small";
+    when.textContent = e.active ? "sürüyor" : formatEventTime(e.start);
+    top.append(when);
+    const name = document.createElement("div");
+    name.className = "ev-item-name";
+    name.textContent = displayName(e.callsign, e.icao24);
+    const line = document.createElement("div");
+    line.className = "muted small";
+    line.textContent = eventHeadline(e);
+    btn.append(top, name, line);
+    li.append(btn);
+    return li;
+  });
+  el.evList.replaceChildren(...items);
+}
+
+function renderEventDetail(): void {
+  const e = selectedEvent;
+  if (!e) return;
+  el.evdKind.style.background = KIND_COLOR[e.kind];
+  setText(el.evdKind, KIND_LABEL[e.kind]);
+  setText(el.evdTitle, displayName(e.callsign, e.icao24));
+  setText(el.evdSummary, e.summary);
+  const rows = eventFacts(e).map(([k, v]) => {
+    const div = document.createElement("div");
+    const dt = document.createElement("dt");
+    dt.textContent = k;
+    const dd = document.createElement("dd");
+    dd.textContent = v;
+    div.append(dt, dd);
+    return div;
+  });
+  el.evdFacts.replaceChildren(...rows);
+  el.evdAircraft.hidden = !byIcao.has(e.icao24);
+}
+
+function showEventList(): void {
+  selectedEvent = null;
+  overlays?.setEvent(null);
+  el.evDetail.hidden = true;
+  el.evListView.hidden = false;
+  renderEventList();
+}
+
+function selectEvent(e: AnomalyEvent): void {
+  selectedEvent = e;
+  el.evListView.hidden = true;
+  el.evDetail.hidden = false;
+  renderEventDetail();
+  overlays?.setEvent(eventGeometry(e));
+  if (mapRef) {
+    const narrow = isNarrow();
+    const panelW = el.events.offsetWidth;
+    mapRef.fitBounds(eventBounds(e), {
+      padding: narrow
+        ? { top: 70, bottom: el.events.offsetHeight + 20, left: 20, right: 20 }
+        : { top: 80, bottom: 40, left: panelW + 40, right: 40 },
+      maxZoom: 10,
+      duration: 400,
+    });
+  }
+  el.evBack.focus({ preventScroll: true });
+}
+
+function openEvents(): void {
+  if (isNarrow() && selected !== null) closePanel();
+  eventsOpen = true;
+  el.events.hidden = false;
+  el.btnEvents.setAttribute("aria-pressed", "true");
+  document.body.classList.add("events-open");
+  if (selectedEvent) renderEventDetail();
+  else renderEventList();
+  el.events.focus({ preventScroll: true });
+}
+
+function closeEvents(): void {
+  eventsOpen = false;
+  selectedEvent = null;
+  overlays?.setEvent(null);
+  el.events.hidden = true;
+  el.evDetail.hidden = true;
+  el.evListView.hidden = false;
+  el.btnEvents.setAttribute("aria-pressed", "false");
+  document.body.classList.remove("events-open");
+}
+
+el.btnEvents.addEventListener("click", () => (eventsOpen ? closeEvents() : openEvents()));
+el.eventsClose.addEventListener("click", closeEvents);
+el.evBack.addEventListener("click", showEventList);
+el.evdAircraft.addEventListener("click", () => {
+  if (selectedEvent) openPanel(selectedEvent.icao24);
+});
+
+function onEvents(m: EventsMessage): void {
+  eventsMsg = m;
+  renderEventsBadge();
+  if (selectedEvent) {
+    // Keep showing the selected event, with its latest state if it is still listed.
+    const fresh = m.events.find((e) => e.key === selectedEvent?.key);
+    if (fresh) {
+      selectedEvent = fresh;
+      overlays?.setEvent(eventGeometry(fresh));
+    }
+    if (eventsOpen) renderEventDetail();
+  } else if (eventsOpen) {
+    renderEventList();
+  }
+}
 
 // ---------------------------------------------------------------- about / coverage buttons
 el.btnAbout.addEventListener("click", () => el.about.showModal());
@@ -279,6 +472,9 @@ const feed = new Feed(feedUrl(window.location), {
         break;
       case "snapshot":
         onSnapshot(msg, recvAt);
+        break;
+      case "events":
+        onEvents(msg);
         break;
     }
   },
@@ -354,6 +550,7 @@ async function initMap(): Promise<void> {
     overlays = addOverlays(map, map.getStyle());
     overlays.setCoverageVisible(coverageOn);
     applyCoverage();
+    if (selectedEvent) overlays.setEvent(eventGeometry(selectedEvent));
     update();
     void loadBoundary(map);
   });

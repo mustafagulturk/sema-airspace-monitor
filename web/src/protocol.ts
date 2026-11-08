@@ -60,7 +60,50 @@ export interface SnapshotMessage {
   aircraft: Aircraft[];
 }
 
-export type ServerMessage = HelloMessage | CoverageMessage | SnapshotMessage;
+export type EventKind = "emergency" | "rapid_descent" | "holding" | "route_deviation" | "signal_loss";
+
+/** [lon, lat, alt_m | null, t] oldest first */
+export type EventTrackPoint = [number, number, number | null, number];
+
+/** An anomaly raised by the server's detector (phase 4). */
+export interface AnomalyEvent {
+  id: number;
+  /** kind:icao24:start, stable across server restarts */
+  key: string;
+  kind: EventKind;
+  icao24: string;
+  callsign: string;
+  country: string;
+  track_id: number;
+  /** data time the anomaly began (unix s) */
+  start: number;
+  /** data time it was raised */
+  detect: number;
+  /** last time it held (unix s); == start while just opened */
+  end: number;
+  active: boolean;
+  lat: number;
+  lon: number;
+  alt: number | null;
+  /** one-line Turkish description */
+  summary: string;
+  /** kind-specific numbers, e.g. squawk, drop_m, radius_m, turn_deg, gap_s */
+  details: Record<string, unknown>;
+  track: EventTrackPoint[];
+}
+
+export interface EventsMessage {
+  type: "events";
+  protocol: number;
+  time: number;
+  /** events raised since the server started, per kind */
+  counts: Partial<Record<EventKind, number>>;
+  active: number;
+  /** active first (newest first), then recently ended */
+  events: AnomalyEvent[];
+}
+
+export type ServerMessage = HelloMessage | CoverageMessage | SnapshotMessage | EventsMessage;
 
 export type ParseResult =
   | { ok: true; message: ServerMessage }
@@ -107,6 +150,10 @@ export function parseMessage(text: string): ParseResult {
       )
         break;
       return { ok: true, message: raw as unknown as SnapshotMessage };
+    case "events":
+      if (!Array.isArray(raw.events) || !isObj(raw.counts)) break;
+      if (!raw.events.every((e) => isObj(e) && typeof e.key === "string" && Array.isArray(e.track))) break;
+      return { ok: true, message: raw as unknown as EventsMessage };
   }
   return { ok: false, error: "shape", detail: `bad ${String(raw.type)} message` };
 }
