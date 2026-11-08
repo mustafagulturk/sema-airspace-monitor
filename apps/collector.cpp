@@ -14,16 +14,20 @@
 //   SEMA_LIVE_PORT          same as --serve
 //   SEMA_LIVE_ADDR          address the live map server listens on (default 127.0.0.1)
 //   SEMA_WEB_ROOT           built web map to serve (default ./web/dist)
+//   SEMA_EVENTS_FILE        same as --events
 // Flags:
 //   --once           run a single cycle and exit
 //   --dry-run        do not touch the database; print a summary instead
 //   --record FILE    append every filtered snapshot (civil aircraft inside the
 //                    area only) to FILE as JSON Lines, for sema_replay
 //   --serve PORT     serve the live map (HTTP + WebSocket on /ws) on PORT
+//   --events FILE    append anomaly events to FILE as JSON Lines
 //
 // Every cycle also runs the tracker (Kalman filters, track lifecycle, data
-// quality checks) and logs its counters; full tracker metrics are logged once
-// an hour as a "tracker_metrics" event.
+// quality checks) and the anomaly detector (emergency squawks, rapid descent,
+// holding, route deviation, signal loss) and logs their counters; every new
+// event is logged as an "anomaly" line and stored in anomaly_events. Full
+// tracker and detector metrics are logged once an hour.
 
 #include <pthread.h>
 
@@ -44,6 +48,7 @@
 #include <thread>
 
 #include "sema/aircraft_registry.hpp"
+#include "sema/anomaly.hpp"
 #include "sema/clock.hpp"
 #include "sema/geo.hpp"
 #include "sema/http.hpp"
@@ -71,6 +76,7 @@ struct Options {
     long daily_credits = 4000;
     long retention_hours = 72;
     std::string record_file;
+    std::string events_file;
     long serve_port = -1;  // -1: no live map server
     std::string serve_addr = "127.0.0.1";
     std::string web_root = "web/dist";
@@ -112,11 +118,14 @@ Options parse_options(int argc, char** argv) {
         } else if (a == "--record") {
             if (i + 1 >= argc) throw std::runtime_error("--record needs a file name");
             o.record_file = argv[++i];
+        } else if (a == "--events") {
+            if (i + 1 >= argc) throw std::runtime_error("--events needs a file name");
+            o.events_file = argv[++i];
         } else if (a == "--serve") {
             if (i + 1 >= argc) throw std::runtime_error("--serve needs a port");
             o.serve_port = parse_port(argv[++i]);
         } else if (a == "-h" || a == "--help") {
-            std::cout << "usage: sema_collector [--once] [--dry-run] [--record FILE] [--serve PORT]\n"
+            std::cout << "usage: sema_collector [--once] [--dry-run] [--record FILE] [--events FILE] [--serve PORT]\n"
                          "See the comment at the top of apps/collector.cpp for environment variables.\n";
             std::exit(0);
         } else {
@@ -129,6 +138,7 @@ Options parse_options(int argc, char** argv) {
     o.data_dir = env_or("SEMA_DATA_DIR", o.data_dir);
     o.aircraft_db = env_or("SEMA_AIRCRAFT_DB", "");
     if (o.record_file.empty()) o.record_file = env_or("SEMA_RECORD_FILE", "");
+    if (o.events_file.empty()) o.events_file = env_or("SEMA_EVENTS_FILE", "");
     if (const char* port = std::getenv("SEMA_LIVE_PORT"); o.serve_port < 0 && port != nullptr && *port != '\0') {
         o.serve_port = parse_port(port);
     }
@@ -221,6 +231,10 @@ int run(const Options& opt) {
     if (!opt.record_file.empty()) recorder = std::make_unique<sema::SnapshotWriter>(opt.record_file);
     sema::Tracker tracker({}, [&area](sema::LatLon p) { return area.contains(p); });
     auto last_metrics_log = Clock::now();
+    // Anomaly detection (phase 4) on the same filtered snapshots.
+    sema::AnomalyDetector detector({}, std::make_shared<const sema::MultiPolygon>(area));
+    std::unique_ptr<sema::EventLog> event_log;
+    if (!opt.events_file.empty()) event_log = std::make_unique<sema::EventLog>(opt.events_file);
 
     sema::SystemClock clock;
     SignalWatcher signals(clock);  // before any other thread starts, so they inherit the blocked signals
@@ -238,6 +252,7 @@ int run(const Options& opt) {
         server->start();
         server->publish("hello", sema::live_hello_json("live", "").dump());
         server->publish("coverage", live.coverage_json().dump());
+        server->publish("events", detector.events_json().dump());
         log_line({{"event", "live_server"}, {"address", opt.serve_addr}, {"port", server->port()},
                   {"web_root", opt.web_root}});
     }
@@ -297,6 +312,33 @@ int run(const Options& opt) {
                 }
             }
             const auto tr = tracker.process(filtered);
+            const auto ev = detector.process(filtered, tracker, tr);
+            for (const auto& e : ev.opened) {
+                log_line({{"event", "anomaly"}, {"kind", sema::to_string(e.kind)}, {"icao24", e.icao24},
+                          {"callsign", e.callsign}, {"summary", e.summary}, {"details", e.details}});
+            }
+            if (!ev.empty()) {
+                if (event_log) {
+                    try {
+                        event_log->write(ev);
+                    } catch (const std::exception& e) {
+                        line["events_error"] = e.what();
+                    }
+                }
+                if (store) {
+                    std::vector<sema::AnomalyEvent> changed = ev.opened;
+                    changed.insert(changed.end(), ev.updated.begin(), ev.updated.end());
+                    changed.insert(changed.end(), ev.closed.begin(), ev.closed.end());
+                    try {
+                        store->upsert_events(changed);
+                    } catch (const std::exception& e) {
+                        line["db_error"] = e.what();
+                    }
+                }
+                if (server) server->publish("events", detector.events_json().dump());
+            }
+            line["anomalies"] = {{"opened", ev.opened.size()}, {"closed", ev.closed.size()},
+                                 {"active", detector.active().size()}};
             if (server) {
                 live.update(filtered, tracker);
                 const double now_s =
@@ -347,6 +389,7 @@ int run(const Options& opt) {
         log_line(line);
         if (Clock::now() - last_metrics_log >= 1h) {
             log_line({{"event", "tracker_metrics"}, {"metrics", tracker.metrics().to_json()}});
+            log_line({{"event", "anomaly_metrics"}, {"metrics", detector.metrics().to_json()}});
             last_metrics_log = Clock::now();
         }
 
@@ -361,6 +404,7 @@ int run(const Options& opt) {
     }
 
     log_line({{"event", "tracker_metrics"}, {"metrics", tracker.metrics().to_json()}});
+    log_line({{"event", "anomaly_metrics"}, {"metrics", detector.metrics().to_json()}});
     log_line({{"event", "stop"}, {"exit_code", exit_code}});
     return exit_code;
 }

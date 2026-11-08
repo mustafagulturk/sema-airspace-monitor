@@ -4,3 +4,4 @@ compile_commands.json
 vcpkg_installed/
 *.swp
 .env
+__pycache__/

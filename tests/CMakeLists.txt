@@ -16,6 +16,7 @@ add_executable(sema_unit_tests
   test_live.cpp
   test_static_files.cpp
   test_live_server.cpp
+  test_anomaly.cpp
 )
 target_link_libraries(sema_unit_tests PRIVATE sema_core sema_live Boost::headers GTest::gtest_main)
 target_compile_definitions(sema_unit_tests PRIVATE

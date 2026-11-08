@@ -18,6 +18,11 @@
 //   --label TEXT    shown in the map's replay banner (e.g. "sentetik veri")
 //   --addr ADDR     listen address for --serve (default 127.0.0.1)
 //   --web-root DIR  built web map (default ./web/dist)
+//   --events        also list every anomaly event and the detector metrics
+//                   (event counts and rates, for tuning thresholds)
+//   --loss-min-coverage N  signal-loss rule: reports needed in the last
+//                   fix's coverage cell (default 200 over 24 h; short
+//                   recordings need a lower value)
 
 #include <pthread.h>
 #include <signal.h>
@@ -38,6 +43,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "sema/anomaly.hpp"
 #include "sema/geo.hpp"
 #include "sema/live.hpp"
 #include "sema/live_server.hpp"
@@ -52,6 +58,8 @@ struct Options {
     bool use_area = true;
     bool json = false;
     bool snapshots = false;
+    bool events = false;
+    std::optional<long> loss_min_coverage;
     std::optional<double> accel_psd;
     std::optional<double> turn_psd;
     std::optional<double> ct_accel_psd;
@@ -64,7 +72,8 @@ struct Options {
 
 [[noreturn]] void usage(int code) {
     std::cerr << "usage: sema_replay <recording.jsonl> [--data-dir DIR] [--no-area] [--accel-psd Q] [--ct-accel-psd Q] [--turn-psd Q] [--json] "
-                 "[--snapshots] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] [--web-root DIR]]\n";
+                 "[--snapshots] [--events [--loss-min-coverage N]] [--serve PORT [--speed X] [--label TEXT] [--addr ADDR] "
+                 "[--web-root DIR]]\n";
     std::exit(code);
 }
 
@@ -100,6 +109,11 @@ Options parse(int argc, char** argv) {
             o.web_root = value();
         } else if (a == "--json") {
             o.json = true;
+        } else if (a == "--events") {
+            o.events = true;
+        } else if (a == "--loss-min-coverage") {
+            o.loss_min_coverage = std::stol(value());
+            if (*o.loss_min_coverage < 0) usage(2);
         } else if (a == "--snapshots") {
             o.snapshots = true;
         } else if (a == "-h" || a == "--help") {
@@ -156,6 +170,31 @@ void print_table(const sema::TrackerMetrics& m) {
     row("per measurement", m.processing_us_per_measurement, 2);
 }
 
+std::string utc(double t) {
+    const auto tt = static_cast<std::time_t>(t);
+    std::tm tm{};
+    gmtime_r(&tt, &tm);
+    char buf[32];
+    (void)std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", &tm);
+    return buf;
+}
+
+void print_events(const sema::AnomalyMetrics& m, const std::vector<sema::AnomalyEvent>& events) {
+    const auto j = m.to_json();
+    std::cout << "\nanomaly events (" << m.events() << " over " << fmt(m.airborne_aircraft_hours, 1)
+              << " airborne aircraft-hours)\n";
+    for (std::size_t i = 0; i < sema::kEventKinds; ++i) {
+        const auto k = sema::to_string(static_cast<sema::EventKind>(i));
+        std::cout << "  " << k << std::string(18 - std::string(k).size(), ' ') << m.events_by_kind[i] << "  ("
+                  << fmt(j["events_per_1000_aircraft_hours"][k].get<double>(), 2) << " per 1000 h)\n";
+    }
+    for (const auto& e : events) {
+        std::cout << "  " << utc(e.start_time) << "  " << sema::to_string(e.kind) << "  " << e.icao24 << ' '
+                  << (e.callsign.empty() ? "-" : e.callsign) << "  " << fmt((e.end_time - e.start_time) / 60.0, 1)
+                  << " min" << (e.active ? " (open)" : "") << "  " << e.summary << '\n';
+    }
+}
+
 int run(const Options& o) {
     sema::TrackerConfig cfg;
     if (o.accel_psd) cfg.accel_psd = *o.accel_psd;
@@ -171,6 +210,10 @@ int run(const Options& o) {
     }
 
     sema::Tracker tracker(cfg, in_area);
+    sema::AnomalyConfig acfg;
+    if (o.loss_min_coverage) acfg.signal_loss_min_coverage = static_cast<std::uint64_t>(*o.loss_min_coverage);
+    sema::AnomalyDetector detector(acfg, area);
+    std::vector<sema::AnomalyEvent> finished;  // closed events, in order
     sema::SnapshotReader reader(o.input);
 
     // Live map. Signals are blocked before the server thread starts and are
@@ -195,6 +238,7 @@ int run(const Options& o) {
         std::string label = "x" + fmt(o.speed, o.speed == std::round(o.speed) ? 0 : 1);
         if (!o.label.empty()) label = o.label + ", " + label;
         server->publish("hello", sema::live_hello_json("replay", label).dump());
+        server->publish("events", detector.events_json().dump());
         std::cerr << "sema_replay: serving the map on http://" << o.addr << ':' << server->port() << "/ at x"
                   << o.speed << ", Ctrl-C to stop\n";
     }
@@ -222,7 +266,10 @@ int run(const Options& o) {
             }
         }
         const auto r = tracker.process(*snap);
+        const auto ev = detector.process(*snap, tracker, r);
+        finished.insert(finished.end(), ev.closed.begin(), ev.closed.end());
         if (server) {
+            if (!ev.empty()) server->publish("events", detector.events_json().dump());
             live->update(*snap, tracker);
             server->publish("coverage", live->coverage_json().dump());
             server->publish("snapshot", live->snapshot_json({live->data_time(), o.speed}).dump());
@@ -248,10 +295,19 @@ int run(const Options& o) {
         sigwait(&signals, &sig);
     }
     if (server) server->stop();
+    for (const auto& e : detector.active()) finished.push_back(e);  // still open at the end
     if (o.json) {
-        std::cout << tracker.metrics().to_json().dump(2) << '\n';
+        auto j = tracker.metrics().to_json();
+        if (o.events) {
+            j["anomalies"] = detector.metrics().to_json();
+            nlohmann::json list = nlohmann::json::array();
+            for (const auto& e : finished) list.push_back(e.to_json(false));
+            j["anomaly_events"] = std::move(list);
+        }
+        std::cout << j.dump(2) << '\n';
     } else {
         print_table(tracker.metrics());
+        if (o.events) print_events(detector.metrics(), finished);
     }
     return 0;
 }

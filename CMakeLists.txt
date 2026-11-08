@@ -46,7 +46,8 @@ endif()
 
 # --- Embed SQL migration into the binary -----------------------------------
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/sql/001_init.sql SEMA_SQL_001_INIT)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS sql/001_init.sql)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/sql/002_events.sql SEMA_SQL_002_EVENTS)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS sql/001_init.sql sql/002_events.sql)
 configure_file(src/migrations.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/generated/sema/migrations.hpp @ONLY)
 
 # --- Core library ------------------------------------------------------------
@@ -67,6 +68,7 @@ add_library(sema_core
   src/snapshot_io.cpp
   src/live.cpp
   src/static_files.cpp
+  src/anomaly.cpp
 )
 target_include_directories(sema_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
