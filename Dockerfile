@@ -9,7 +9,9 @@ WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
-RUN npm run build
+# Absolute URL for the link-preview image (og:image); empty keeps it relative.
+ARG SEMA_DOMAIN=""
+RUN if [ -n "$SEMA_DOMAIN" ]; then export VITE_SITE_URL="https://$SEMA_DOMAIN"; fi && npm run build
 
 # ---- C++ core -------------------------------------------------------------------
 FROM ubuntu:24.04 AS build

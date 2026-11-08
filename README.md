@@ -34,6 +34,24 @@ and one Compose file run PostGIS, the collector, Caddy (automatic HTTPS), Promet
 a single VPS. Non-commercial, see *Ethical and legal
 > limits* below.
 
+## Ekran görüntüleri
+
+> Bütün görüntüler **sentetik** bir kaydın tekrar oynatılmasıdır (`tests/fixtures/anomaly_synthetic.jsonl`,
+> üstteki "sentetik veri" şeridi); uçaklar, adresler ve çağrı adları uydurmadır. Gerçek OpenSky
+> verisinden görüntü yayımlanmaz. Altlık harita bu görüntülerde yüklenmemiştir, yalnızca Türkiye sınırı
+> ve uçaklar görünür.
+
+![Haritada uçaklar raporlar arasında Kalman tahminiyle akıyor](docs/img/demo.gif)
+
+| Olay ayrıntısı (bekleme) | İstatistik | Telefon |
+|---|---|---|
+| ![Olay ayrıntısı](docs/img/olay-ayrinti.png) | ![İstatistik paneli ve koridor ısı haritası](docs/img/istatistik.png) | ![Telefonda harita](docs/img/telefon.png) |
+
+Görüntüler `tools/demo/capture.cjs` ile yeniden üretilir (sentetik kayıtla `sema_replay --serve`
+çalışırken; betik "sentetik veri" etiketi yoksa durur). Sitenin bağlantı önizlemesi (`web/public/og.png`,
+LinkedIn/WhatsApp kartı) aynı sentetik görüntüden kırpılır; yayında mutlak adres için `.env`'deki
+`SEMA_DOMAIN` imaj derlenirken kullanılır.
+
 ## Durum
 
 | Aşama | İçerik | Durum |
