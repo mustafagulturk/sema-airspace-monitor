@@ -10,9 +10,16 @@
 //   SEMA_MIN_INTERVAL_S     minimum seconds between requests (default 60)
 //   SEMA_DAILY_CREDITS      daily OpenSky credit quota (default 4000)
 //   SEMA_RETENTION_HOURS    raw positions older than this are summarised and deleted (default 72)
+//   SEMA_RECORD_FILE        same as --record
 // Flags:
-//   --once     run a single cycle and exit
-//   --dry-run  do not touch the database; print a summary instead
+//   --once           run a single cycle and exit
+//   --dry-run        do not touch the database; print a summary instead
+//   --record FILE    append every filtered snapshot (civil aircraft inside the
+//                    area only) to FILE as JSON Lines, for sema_replay
+//
+// Every cycle also runs the tracker (Kalman filters, track lifecycle, data
+// quality checks) and logs its counters; full tracker metrics are logged once
+// an hour as a "tracker_metrics" event.
 
 #include <pthread.h>
 
@@ -40,6 +47,8 @@
 #include "sema/opensky_client.hpp"
 #include "sema/pg_store.hpp"
 #include "sema/pipeline.hpp"
+#include "sema/snapshot_io.hpp"
+#include "sema/tracker.hpp"
 
 namespace {
 
@@ -55,6 +64,7 @@ struct Options {
     long min_interval_s = 60;
     long daily_credits = 4000;
     long retention_hours = 72;
+    std::string record_file;
     bool once = false;
     bool dry_run = false;
 };
@@ -83,8 +93,11 @@ Options parse_options(int argc, char** argv) {
             o.once = true;
         } else if (a == "--dry-run") {
             o.dry_run = true;
+        } else if (a == "--record") {
+            if (i + 1 >= argc) throw std::runtime_error("--record needs a file name");
+            o.record_file = argv[++i];
         } else if (a == "-h" || a == "--help") {
-            std::cout << "usage: sema_collector [--once] [--dry-run]\n"
+            std::cout << "usage: sema_collector [--once] [--dry-run] [--record FILE]\n"
                          "See the comment at the top of apps/collector.cpp for environment variables.\n";
             std::exit(0);
         } else {
@@ -96,6 +109,7 @@ Options parse_options(int argc, char** argv) {
     o.database_url = env_or("SEMA_DATABASE_URL", "");
     o.data_dir = env_or("SEMA_DATA_DIR", o.data_dir);
     o.aircraft_db = env_or("SEMA_AIRCRAFT_DB", "");
+    if (o.record_file.empty()) o.record_file = env_or("SEMA_RECORD_FILE", "");
     o.min_interval_s = env_long("SEMA_MIN_INTERVAL_S", o.min_interval_s, 5);
     o.daily_credits = env_long("SEMA_DAILY_CREDITS", o.daily_credits, 1);
     o.retention_hours = env_long("SEMA_RETENTION_HOURS", o.retention_hours, 1);
@@ -179,6 +193,11 @@ int run(const Options& opt) {
         store->upsert_boundary("turkey", area.to_geojson_geometry());
     }
 
+    std::unique_ptr<sema::SnapshotWriter> recorder;
+    if (!opt.record_file.empty()) recorder = std::make_unique<sema::SnapshotWriter>(opt.record_file);
+    sema::Tracker tracker({}, [&area](sema::LatLon p) { return area.contains(p); });
+    auto last_metrics_log = Clock::now();
+
     sema::SystemClock clock;
     SignalWatcher signals(clock);
     sema::CurlTransport http;
@@ -192,6 +211,7 @@ int run(const Options& opt) {
               {"box_area_sq_deg", box.area_sq_deg()},
               {"credit_cost", cost},
               {"registry_size", registry.size()},
+              {"recording", !opt.record_file.empty()},
               {"dry_run", opt.dry_run}});
 
     auto last_rollup = Clock::now() - 2h;
@@ -227,6 +247,19 @@ int run(const Options& opt) {
             entry.dropped_military = stats.dropped_military;
             std::size_t written = 0;
             if (store) written = store->insert_positions(started, kept);
+            const sema::StatesSnapshot filtered{r.snapshot->time, std::move(kept)};
+            if (recorder) {
+                try {
+                    recorder->write(filtered);
+                } catch (const std::exception& e) {
+                    line["record_error"] = e.what();
+                }
+            }
+            const auto tr = tracker.process(filtered);
+            line["tracks"] = {{"tracked", tr.tracked},     {"confirmed", tr.confirmed}, {"coasting", tr.coasting},
+                              {"created", tr.created},     {"ended", tr.ended.size()},  {"reacquired", tr.reacquired},
+                              {"updates", tr.updates},     {"stale", tr.stale},         {"rejected", tr.rejected},
+                              {"processing_us", static_cast<long>(tr.processing_us)}};
             line.update({{"data_time", r.snapshot->time},
                          {"total", stats.total},
                          {"kept", stats.kept},
@@ -263,6 +296,10 @@ int run(const Options& opt) {
         }
         line["next_in_s"] = wait.count();
         log_line(line);
+        if (Clock::now() - last_metrics_log >= 1h) {
+            log_line({{"event", "tracker_metrics"}, {"metrics", tracker.metrics().to_json()}});
+            last_metrics_log = Clock::now();
+        }
 
         if (opt.once) {
             if (r.status != sema::FetchResult::Status::Ok) exit_code = 1;
@@ -274,6 +311,7 @@ int run(const Options& opt) {
         clock.sleep_for(sleep);
     }
 
+    log_line({{"event", "tracker_metrics"}, {"metrics", tracker.metrics().to_json()}});
     log_line({{"event", "stop"}, {"exit_code", exit_code}});
     return exit_code;
 }

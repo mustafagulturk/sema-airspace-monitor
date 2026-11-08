@@ -173,4 +173,45 @@ BoundingBox query_box_for(const MultiPolygon& area) {
                        std::ceil(b.lat_max / step - eps) * step, std::ceil(b.lon_max / step - eps) * step};
 }
 
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kDegToRad = kPi / 180.0;
+constexpr double kMeanEarthRadiusM = 6371008.8;
+constexpr double kWgs84A = 6378137.0;
+constexpr double kWgs84E2 = 6.69437999014e-3;
+
+struct Radii {
+    double meridian;   // north-south, metres per radian of latitude
+    double transverse; // east-west, metres per radian of longitude at the equator of this latitude
+};
+
+Radii radii_at(double lat_deg) {
+    const double s = std::sin(lat_deg * kDegToRad);
+    const double w = std::sqrt(1.0 - kWgs84E2 * s * s);
+    return {kWgs84A * (1.0 - kWgs84E2) / (w * w * w), kWgs84A / w};
+}
+
+}  // namespace
+
+double haversine_m(LatLon a, LatLon b) {
+    const double dlat = (b.lat - a.lat) * kDegToRad;
+    const double dlon = (b.lon - a.lon) * kDegToRad;
+    const double h = std::sin(dlat / 2) * std::sin(dlat / 2) +
+                     std::cos(a.lat * kDegToRad) * std::cos(b.lat * kDegToRad) * std::sin(dlon / 2) * std::sin(dlon / 2);
+    return 2.0 * kMeanEarthRadiusM * std::asin(std::min(1.0, std::sqrt(h)));
+}
+
+EnuOffset to_local(LatLon ref, LatLon p) {
+    const Radii r = radii_at(ref.lat);
+    return {(p.lon - ref.lon) * kDegToRad * r.transverse * std::cos(ref.lat * kDegToRad),
+            (p.lat - ref.lat) * kDegToRad * r.meridian};
+}
+
+LatLon from_local(LatLon ref, EnuOffset d) {
+    const Radii r = radii_at(ref.lat);
+    return {ref.lat + d.north / r.meridian / kDegToRad,
+            ref.lon + d.east / (r.transverse * std::cos(ref.lat * kDegToRad)) / kDegToRad};
+}
+
 }  // namespace sema

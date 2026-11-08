@@ -59,4 +59,20 @@ private:
 // Smallest box (rounded outwards to 0.05 deg) containing the polygon.
 BoundingBox query_box_for(const MultiPolygon& area);
 
+// Great-circle distance in metres (haversine, mean Earth radius).
+double haversine_m(LatLon a, LatLon b);
+
+// Offset in metres in a local east/north tangent plane.
+struct EnuOffset {
+    double east;
+    double north;
+};
+
+// Local tangent-plane projection around `ref` using the WGS84 radii of
+// curvature at the reference latitude. Accurate to well under a metre within
+// ~50 km of `ref`, which is all the tracker needs because it re-centres its
+// frame on every update.
+EnuOffset to_local(LatLon ref, LatLon p);
+LatLon from_local(LatLon ref, EnuOffset d);
+
 }  // namespace sema
